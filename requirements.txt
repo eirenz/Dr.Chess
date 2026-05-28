@@ -1,0 +1,9 @@
+PyQt6
+python-chess
+opencv-python
+mss
+numpy
+requests
+pywin32
+pygetwindow
+pynput
