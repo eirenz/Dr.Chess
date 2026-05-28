@@ -1,4 +1,5 @@
 import sys
+import os
 import time
 import queue
 import threading
@@ -34,6 +35,9 @@ def capture_thread_func():
     confirmed_fen = ""
     confirmed_active_color = 'w'
     
+    # --- Layer 4: Auto-theme detection flag ---
+    theme_detected = config.ACTIVE_THEME != "auto"
+    
     no_board_count = 0
     unmatched_frames_count = 0
     last_capture_time = time.time()
@@ -48,7 +52,17 @@ def capture_thread_func():
                 if cmd == "TOGGLE_TURN":
                     confirmed_active_color = 'b' if confirmed_active_color == 'w' else 'w'
                     confirmed_fen = ""  # Force rebuild so it pushes new FEN immediately
+                    fen_builder.reset_orientation_lock()
                     print(f"MANUAL OVERRIDE: Turn set to {'White' if confirmed_active_color == 'w' else 'Black'}")
+                elif cmd.startswith("SET_THEME:"):
+                    new_theme = cmd.split(":", 1)[1]
+                    templates = fen_builder.load_templates(new_theme)
+                    config.PIECE_THEME = new_theme
+                    config.ACTIVE_THEME = new_theme
+                    confirmed_fen = ""  # Force re-read
+                    theme_detected = True
+                    fen_builder.reset_orientation_lock()
+                    print(f"Theme changed to: {new_theme}")
             except:
                 pass
         
@@ -88,6 +102,14 @@ def capture_thread_func():
         if board_img.size == 0:
             continue
         
+        # --- Layer 4: Auto-detect theme on first valid board ---
+        if not theme_detected:
+            detected_theme = fen_builder.detect_best_theme(board_img)
+            templates = fen_builder.load_templates(detected_theme)
+            config.PIECE_THEME = detected_theme
+            config.ACTIVE_THEME = detected_theme
+            theme_detected = True
+        
         # Build FEN using the last CONFIRMED FEN state as reference
         try:
             fen_str, current_grid, is_flipped, returned_active, orient_source, piece_count, matched = fen_builder.build_fen(
@@ -107,10 +129,10 @@ def capture_thread_func():
             
         if not matched and confirmed_fen:
             unmatched_frames_count += 1
-            if unmatched_frames_count < 3:
+            if unmatched_frames_count < 5:
                 continue
             else:
-                print("3 consecutive unmatched frames. Resyncing board state visually!")
+                print("5 consecutive unmatched frames. Resyncing board state visually!")
                 unmatched_frames_count = 0
                 forced_resync = True
         else:
@@ -416,6 +438,51 @@ if __name__ == "__main__":
         elo_menu.addAction(elo_action)
         
     menu.addMenu(elo_menu)
+    
+    menu.addSeparator()
+    
+    # --- Piece Theme Submenu ---
+    theme_menu = QMenu("Piece Theme")
+    theme_group = QActionGroup(theme_menu)
+    theme_group.setExclusive(True)
+    
+    # Auto-detect option
+    auto_theme_action = QAction("Auto-Detect", theme_menu)
+    auto_theme_action.setCheckable(True)
+    auto_theme_action.setChecked(config.ACTIVE_THEME == "auto")
+    
+    def on_auto_theme(checked):
+        if checked:
+            config.ACTIVE_THEME = "auto"
+            print("Theme: Auto-detect on next board capture")
+    
+    auto_theme_action.toggled.connect(on_auto_theme)
+    theme_group.addAction(auto_theme_action)
+    theme_menu.addAction(auto_theme_action)
+    theme_menu.addSeparator()
+    
+    # Individual theme options
+    for theme_name in config.AVAILABLE_THEMES:
+        theme_dir = os.path.join(config.PIECES_DIR, theme_name)
+        if not os.path.isdir(theme_dir):
+            continue
+        
+        t_action = QAction(theme_name.replace("_", " ").title(), theme_menu)
+        t_action.setCheckable(True)
+        if config.ACTIVE_THEME == theme_name:
+            t_action.setChecked(True)
+        
+        def make_theme_handler(name):
+            def handler(checked):
+                if checked:
+                    command_queue.put(f"SET_THEME:{name}")
+            return handler
+        
+        t_action.toggled.connect(make_theme_handler(theme_name))
+        theme_group.addAction(t_action)
+        theme_menu.addAction(t_action)
+    
+    menu.addMenu(theme_menu)
     
     menu.addSeparator()
     

@@ -1,10 +1,12 @@
+import os as _os
+
 STOCKFISH_PATH = r"D:\Downloads\stockfish-windows-x86-64-avx2\stockfish\stockfish-windows-x86-64-avx2.exe"
 STOCKFISH_ELO = 0  # 0 means Max/Unlimited
 CAPTURE_FPS = 10
 PIECE_THEME = "neo"
 PIECE_SIZE = 150
-PIECES_DIR = r"D:\ChessOverlay\pieces"
-MATCH_THRESHOLD = 0.50
+PIECES_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "pieces")
+MATCH_THRESHOLD = 0.65
 MOVE_ANIM_DELAY_MS = 150
 OVERLAY_OPACITY = 0.85
 SHOW_SECOND_BEST = True
@@ -36,6 +38,17 @@ AUTO_ADAPTIVE_TIERS = [
     (8,  15, 20, 2.5),   # Late game: deeper search, still capped
     (0,   7, 22, 3.5),   # Endgame: maximum precision, generous time
 ]
+
+# ─── Multi-Theme Support ─────────────────────────────────────────
+# Available piece themes (downloaded via download_themes.py)
+AVAILABLE_THEMES = [
+    "neo", "classic", "neo_wood", "wood", "glass",
+    "metal", "modern", "tournament", "bases", "ocean",
+    "marble", "vintage", "club", "book", "alpha",
+]
+
+# Active theme — set to "auto" for auto-detection on first frame
+ACTIVE_THEME = "auto"
 
 # Legacy aliases (used if code references these directly)
 ANALYSIS_DEPTH = 18

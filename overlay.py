@@ -412,8 +412,8 @@ class ChessOverlay(QMainWindow):
 
     def _paint_debug_panel(self, painter, bar_w):
         """Render debug info panel in the top-left corner of the board area."""
-        panel_w = 220
-        panel_h = 90
+        panel_w = 240
+        panel_h = 108
         panel_x = bar_w + 5
         panel_y = 5
         
@@ -431,10 +431,20 @@ class ChessOverlay(QMainWindow):
         fps = self.debug_info.get("fps", 0)
         fps_color = QColor("#4caf50") if fps >= 1.5 else QColor("#f44336")
         
+        # Get theme info
+        try:
+            import fen_builder
+            theme_name = fen_builder.get_active_theme_name()
+            auto_tag = " (auto)" if fen_builder.is_theme_auto_detected() else ""
+        except Exception:
+            theme_name = "N/A"
+            auto_tag = ""
+        
         lines = [
             (f"FPS: {fps:.1f}", fps_color),
             (f"Confidence: {self.debug_info.get('confidence', 0)}/32 pieces", QColor("#ffffff")),
             (f"Orient: {self.debug_info.get('orientation_source', 'N/A')}", QColor("#2196f3")),
+            (f"Theme: {theme_name}{auto_tag}", QColor("#ce93d8")),
             (f"Error: {self.debug_info.get('last_error', 'None')}", QColor("#ffc107")),
         ]
         
@@ -443,3 +453,4 @@ class ChessOverlay(QMainWindow):
             painter.setPen(QPen(color))
             painter.drawText(panel_x + 8, y, text)
             y += 18
+

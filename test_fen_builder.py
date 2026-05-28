@@ -9,7 +9,7 @@ def test_fen():
         return
         
     templates = load_templates()
-    fen_str, grid, is_flipped, active_color, orient_src, piece_count = build_fen(img, templates, None)
+    fen_str, grid, is_flipped, active_color, orient_src, piece_count, matched = build_fen(img, templates, None)
     
     expected = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
     
