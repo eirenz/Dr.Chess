@@ -119,6 +119,42 @@ def test_orientation_lock():
     print("  [OK] Orientation lock works correctly")
 
 
+def test_user_color_lock():
+    """Test that setting user color locks orientation immediately."""
+    from fen_builder import set_user_color, get_user_color, is_orientation_locked
+    
+    reset_orientation_lock()
+    
+    # Set to White -> should lock as Standard (is_flipped=False)
+    set_user_color("white")
+    assert get_user_color() == "white"
+    assert is_orientation_locked(), "Should be locked after setting white"
+    
+    is_flipped, source = get_board_orientation(['.'] * 64)
+    assert not is_flipped, "White user -> Standard orientation (not flipped)"
+    assert "USER" in source, f"Source should say USER, got: {source}"
+    
+    # Set to Black -> should lock as Flipped (is_flipped=True)
+    set_user_color("black")
+    assert get_user_color() == "black"
+    assert is_orientation_locked(), "Should be locked after setting black"
+    
+    is_flipped, source = get_board_orientation(['.'] * 64)
+    assert is_flipped, "Black user -> Flipped orientation"
+    assert "USER" in source, f"Source should say USER, got: {source}"
+    
+    # Set to Auto -> should unlock
+    set_user_color("auto")
+    assert get_user_color() == "auto"
+    assert not is_orientation_locked(), "Should be unlocked in auto mode"
+    
+    # Clean up
+    reset_orientation_lock()
+    set_user_color("auto")
+    
+    print("  [OK] User color lock works correctly")
+
+
 if __name__ == "__main__":
     print("Running validation and orientation lock tests...\n")
     test_validation_valid_positions()
@@ -127,4 +163,5 @@ if __name__ == "__main__":
     test_validation_excess_pawns()
     test_validation_excess_pieces()
     test_orientation_lock()
+    test_user_color_lock()
     print("\nAll tests passed!")

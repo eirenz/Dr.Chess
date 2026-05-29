@@ -16,6 +16,12 @@ _lock_confidence_count = 0   # Consecutive confident COM readings before locking
 _lock_candidate = None       # Which orientation the consecutive readings are for
 _LOCK_THRESHOLD = 5          # Require 5 consecutive confident readings to lock
 
+# --- User Color State ---
+# "white" = user plays White (pieces at bottom, is_flipped=False)
+# "black" = user plays Black (pieces at bottom, is_flipped=True)  
+# "auto"  = auto-detect via COM (legacy behavior)
+_user_color = "auto"
+
 # --- Performance: smaller template size for matching ---
 _FAST_SIZE = 64  # Downscaled template size (was 150 — 5.5x fewer pixels)
 
@@ -253,6 +259,33 @@ def reset_orientation_lock():
     _lock_candidate = None
     print("[FEN] Orientation lock RESET")
 
+def set_user_color(color: str):
+    """Set the user's playing color. Locks orientation immediately.
+    
+    Args:
+        color: 'white', 'black', or 'auto'
+    """
+    global _user_color, _orientation_locked, _locked_orientation
+    _user_color = color.lower()
+    
+    if _user_color == "white":
+        _orientation_locked = True
+        _locked_orientation = False  # Standard = white at bottom
+        print(f"[ORIENT] User color set to WHITE -> orientation LOCKED(Standard)")
+    elif _user_color == "black":
+        _orientation_locked = True
+        _locked_orientation = True   # Flipped = black at bottom
+        print(f"[ORIENT] User color set to BLACK -> orientation LOCKED(Flipped)")
+    else:
+        # Auto mode — reset lock so COM can re-evaluate
+        _orientation_locked = False
+        print(f"[ORIENT] User color set to AUTO -> orientation unlocked")
+
+
+def get_user_color() -> str:
+    """Return the current user color setting ('white', 'black', or 'auto')."""
+    return _user_color
+
 
 def is_orientation_locked() -> bool:
     """Return whether orientation is currently locked (for debug display)."""
@@ -261,32 +294,38 @@ def is_orientation_locked() -> bool:
 
 def get_board_orientation(current_grid: list) -> tuple[bool, str]:
     """
-    3-tier orientation detection with orientation lock.
+    4-tier orientation detection.
     Returns (is_flipped, orientation_source).
     
-    Tier 0: If locked, return locked value immediately
-    Tier 1: Manual override via QSettings
-    Tier 2: Center-of-Mass with confidence check (>=6 pieces, >0.5 sq diff)
-             + lock after 5 consecutive high-confidence readings
-    Tier 3: Fallback to last valid orientation (default: Standard)
+    Tier 0: User color set (white/black) -> immediate lock
+    Tier 1: If locked (from COM confidence), return locked value
+    Tier 2: Manual override via QSettings
+    Tier 3: Center-of-Mass with auto-lock on first confident reading
+    Tier 4: Fallback to last valid orientation
     """
     global _last_valid_orientation
     global _orientation_locked, _locked_orientation, _lock_confidence_count, _lock_candidate
     
-    # --- Tier 0: Locked Orientation ---
+    # --- Tier 0: User Color Lock ---
+    # When user explicitly sets their color, orientation is permanently locked
+    if _user_color in ("white", "black") and _orientation_locked:
+        orient_str = "Flipped" if _locked_orientation else "Standard"
+        color_str = _user_color.capitalize()
+        return _locked_orientation, f"USER({color_str})"
+    
+    # --- Tier 1: Locked Orientation (from COM confidence) ---
     if _orientation_locked:
         return _locked_orientation, f"LOCKED({'Flipped' if _locked_orientation else 'Standard'})"
     
-    # --- Tier 1: Manual Override ---
+    # --- Tier 2: Manual Override ---
     manual_flip = _settings.value("manual_flip", False, type=bool)
     if manual_flip:
         _last_valid_orientation = True
-        # Manual override also locks
         _orientation_locked = True
         _locked_orientation = True
         return True, "MANUAL"
     
-    # --- Tier 2: Center-of-Mass with Confidence ---
+    # --- Tier 3: Center-of-Mass with Auto-Lock ---
     white_y_sum = 0
     white_count = 0
     black_y_sum = 0
@@ -312,17 +351,15 @@ def get_board_orientation(current_grid: list) -> tuple[bool, str]:
         
         detected_flip = None
         if white_avg > black_avg + 0.5:
-            # White pieces are lower on screen -> Standard orientation
             detected_flip = False
         elif black_avg > white_avg + 0.5:
-            # Black pieces are lower on screen -> Flipped orientation
             detected_flip = True
         
         if detected_flip is not None:
             _last_valid_orientation = detected_flip
             
-            # High-confidence lock check: >=10 pieces AND >=1.5 sq separation
-            if total_pieces >= 10 and separation >= 1.5:
+            # In auto mode: lock on first confident reading (>=8 pieces, >=1.0 sq separation)
+            if _user_color == "auto" and total_pieces >= 8 and separation >= 1.0:
                 if _lock_candidate == detected_flip:
                     _lock_confidence_count += 1
                 else:
@@ -338,7 +375,7 @@ def get_board_orientation(current_grid: list) -> tuple[bool, str]:
             
             return detected_flip, "AUTO-COM"
     
-    # --- Tier 3: Fallback to last valid orientation ---
+    # --- Tier 4: Fallback to last valid orientation ---
     return _last_valid_orientation, "FALLBACK"
 
 

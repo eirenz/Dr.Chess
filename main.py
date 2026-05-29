@@ -65,6 +65,12 @@ def capture_thread_func():
                     fen_builder.reset_orientation_lock()
                     fen_builder.reset_turn_tracking()
                     print(f"Theme changed to: {new_theme}")
+                elif cmd.startswith("SET_COLOR:"):
+                    new_color = cmd.split(":", 1)[1]
+                    fen_builder.set_user_color(new_color)
+                    confirmed_fen = ""  # Force re-read with new orientation
+                    fen_builder.reset_turn_tracking()
+                    print(f"User color set to: {new_color}")
             except:
                 pass
         
@@ -447,6 +453,29 @@ if __name__ == "__main__":
         elo_menu.addAction(elo_action)
         
     menu.addMenu(elo_menu)
+    
+    # --- Playing As Submenu (top priority — most important setting) ---
+    color_menu = QMenu("Playing As")
+    color_group = QActionGroup(color_menu)
+    color_group.setExclusive(True)
+    
+    for color_val, color_label in [("auto", "Auto-Detect"), ("white", "White"), ("black", "Black")]:
+        c_action = QAction(color_label, color_menu)
+        c_action.setCheckable(True)
+        if fen_builder.get_user_color() == color_val:
+            c_action.setChecked(True)
+        
+        def make_color_handler(val):
+            def handler(checked):
+                if checked:
+                    command_queue.put(f"SET_COLOR:{val}")
+            return handler
+        
+        c_action.toggled.connect(make_color_handler(color_val))
+        color_group.addAction(c_action)
+        color_menu.addAction(c_action)
+    
+    menu.addMenu(color_menu)
     
     menu.addSeparator()
     
