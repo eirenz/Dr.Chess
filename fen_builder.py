@@ -29,6 +29,10 @@ _all_theme_templates = {}   # {theme_name: {piece_code: gray_template_array}}
 _active_theme_name = None   # Currently active theme after auto-detection
 _theme_auto_detected = False
 
+# --- Turn tracking state ---
+_last_emitted_turn = None   # 'w' or 'b' — last turn returned from build_fen when board changed
+_last_emitted_placement = None  # Last board placement string returned
+
 
 def load_templates(theme_name: str = None) -> dict:
     """Load piece templates and pre-compute fast grayscale versions.
@@ -401,21 +405,93 @@ def validate_fen_plausibility(placement: str) -> tuple[bool, str]:
     return True, ""
 
 
-def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev_active_fallback: str = 'w') -> tuple[str | None, list, bool, str, str, int, bool]:
+def _infer_turn_from_diff(prev_grid: list, curr_grid: list) -> str | None:
+    """Determine whose turn it is by comparing which color's pieces changed position.
+    
+    Logic:
+    - Find squares where pieces departed (were on prev_grid but not on curr_grid)
+    - If white pieces departed → White just played → it's Black's turn ('b')
+    - If black pieces departed → Black just played → it's White's turn ('w')
+    - If ambiguous or no change → return None
+    """
+    if prev_grid is None or len(prev_grid) != 64 or len(curr_grid) != 64:
+        return None
+    
+    white_departed = 0  # Count of squares where a white piece left
+    black_departed = 0  # Count of squares where a black piece left
+    
+    for i in range(64):
+        prev_p = prev_grid[i]
+        curr_p = curr_grid[i]
+        
+        if prev_p == curr_p:
+            continue
+        
+        # A piece departed from this square
+        if prev_p.startswith('w') and curr_p != prev_p:
+            white_departed += 1
+        elif prev_p.startswith('b') and curr_p != prev_p:
+            black_departed += 1
+    
+    # No changes detected
+    if white_departed == 0 and black_departed == 0:
+        return None
+    
+    # Clear signal: only one color's pieces moved
+    if white_departed > 0 and black_departed == 0:
+        return 'b'  # White moved → now Black's turn
+    if black_departed > 0 and white_departed == 0:
+        return 'w'  # Black moved → now White's turn
+    
+    # Both colors changed (capture scenario): the color with more departures is the mover
+    # In a normal move+capture: mover departs 1 square, captured piece also "departs" 1 square
+    # But the mover also arrives at the capture square, so the mover has 1 net departure
+    # and the captured side has 1 piece simply gone (not relocated)
+    # Heuristic: count arrivals too
+    white_arrived = 0
+    black_arrived = 0
+    for i in range(64):
+        prev_p = prev_grid[i]
+        curr_p = curr_grid[i]
+        if prev_p == curr_p:
+            continue
+        if curr_p.startswith('w') and prev_p != curr_p:
+            white_arrived += 1
+        elif curr_p.startswith('b') and prev_p != curr_p:
+            black_arrived += 1
+    
+    # The mover is the one who has arrivals (piece landed on a new square)
+    if white_arrived > 0 and black_arrived == 0:
+        return 'b'  # White piece arrived somewhere → White moved → Black's turn
+    if black_arrived > 0 and white_arrived == 0:
+        return 'w'  # Black piece arrived somewhere → Black moved → White's turn
+    
+    # Truly ambiguous — can't determine
+    return None
+
+
+def reset_turn_tracking():
+    """Reset turn tracking state. Called on manual turn toggle or theme change."""
+    global _last_emitted_turn, _last_emitted_placement
+    _last_emitted_turn = None
+    _last_emitted_placement = None
+
+
+def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev_active_fallback: str = 'w', prev_grid: list = None) -> tuple[str | None, list, bool, str, str, int, bool]:
     """
     Returns (fen_string, current_grid, is_flipped, active_color, orientation_source, piece_count, matched_legal_move).
     Uses 1-ply and 2-ply python-chess legal move generation to sync sequence of play.
     
-    Performance optimizations:
-    - Squares are matched at 64x64 grayscale (not 150x150 BGR)
-    - Unchanged squares (pixel-hash match) reuse the previous grid result
+    Args:
+        prev_grid: The previous confirmed grid (64-element list) for grid-diff turn inference.
     
     Safety layers:
     - Layer 1: Orientation lock (prevents flip in endgames)
     - Layer 2: FEN plausibility validation (rejects impossible positions)
     - Layer 3: 2-ply matching (recovers from missed frames)
+    - Turn inference: Grid-diff analysis + parity enforcement
     """
-    global _prev_square_hashes, _prev_grid_cache
+    global _prev_square_hashes, _prev_grid_cache, _last_emitted_turn, _last_emitted_placement
     
     board_h, board_w = board_img.shape[:2]
     sq_w, sq_h = board_w // 8, board_h // 8
@@ -515,6 +591,8 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
                     matched_legal_move = True
                     new_fen = board.fen()
                     new_active_color = 'w' if board.turn else 'b'
+                    _last_emitted_turn = new_active_color
+                    _last_emitted_placement = placement
                     print(f"  [FEN] 1-ply matched: {board.peek().uci()}")
                     return new_fen, current_grid, is_flipped, new_active_color, orientation_source, piece_count, True
                 board.pop()
@@ -529,6 +607,8 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
                         matched_legal_move = True
                         new_fen = board2.fen()
                         new_active_color = 'w' if board2.turn else 'b'
+                        _last_emitted_turn = new_active_color
+                        _last_emitted_placement = placement
                         print(f"  [FEN] 2-ply matched: {move1.uci()} + {move2.uci()}")
                         return new_fen, current_grid, is_flipped, new_active_color, orientation_source, piece_count, True
                     board2.pop()
@@ -538,9 +618,26 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
             print(f"[FEN] Error parsing prev_fen: {e}")
             
     # Fallback / Resync Path
-    # If no legal move matches or we have no prev_fen, we build a fresh FEN from the visual grid using the fallback turn.
+    # --- Fix 1: Grid-diff turn inference for resync ---
+    if prev_grid is not None:
+        inferred_turn = _infer_turn_from_diff(prev_grid, ordered_grid)
+        if inferred_turn is not None:
+            new_active_color = inferred_turn
+            print(f"[TURN] Inferred from grid-diff: {new_active_color}")
+    
+    # --- Fix 2: Turn parity enforcement ---
+    board_changed = (_last_emitted_placement is not None and _last_emitted_placement != placement)
+    
+    if board_changed and _last_emitted_turn is not None and _last_emitted_turn == new_active_color:
+        # Same color twice on a changed board → force flip
+        new_active_color = 'b' if new_active_color == 'w' else 'w'
+        print(f"[TURN] Parity enforced: flipped to {new_active_color}")
+    
     fen_string = f"{placement} {new_active_color} - - 0 1"
     print(f"[FEN] Resync: {fen_string} [orient={orientation_source}, pieces={piece_count}]")
+    
+    _last_emitted_turn = new_active_color
+    _last_emitted_placement = placement
     
     # If prev_fen was empty, we consider it "matched" so it doesn't trigger fail counters
     is_initial_sync = not bool(prev_fen)

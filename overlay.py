@@ -413,7 +413,7 @@ class ChessOverlay(QMainWindow):
     def _paint_debug_panel(self, painter, bar_w):
         """Render debug info panel in the top-left corner of the board area."""
         panel_w = 240
-        panel_h = 108
+        panel_h = 126
         panel_x = bar_w + 5
         panel_y = 5
         
@@ -440,11 +440,17 @@ class ChessOverlay(QMainWindow):
             theme_name = "N/A"
             auto_tag = ""
         
+        # Turn indicator
+        active_turn = self.debug_info.get("active_turn", "w")
+        turn_str = "White" if active_turn == "w" else "Black"
+        turn_color = QColor("#e8f5e9") if active_turn == "w" else QColor("#ef9a9a")
+        
         lines = [
             (f"FPS: {fps:.1f}", fps_color),
             (f"Confidence: {self.debug_info.get('confidence', 0)}/32 pieces", QColor("#ffffff")),
             (f"Orient: {self.debug_info.get('orientation_source', 'N/A')}", QColor("#2196f3")),
             (f"Theme: {theme_name}{auto_tag}", QColor("#ce93d8")),
+            (f"Turn: {turn_str}", turn_color),
             (f"Error: {self.debug_info.get('last_error', 'None')}", QColor("#ffc107")),
         ]
         

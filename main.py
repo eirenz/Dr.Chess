@@ -53,6 +53,7 @@ def capture_thread_func():
                     confirmed_active_color = 'b' if confirmed_active_color == 'w' else 'w'
                     confirmed_fen = ""  # Force rebuild so it pushes new FEN immediately
                     fen_builder.reset_orientation_lock()
+                    fen_builder.reset_turn_tracking()
                     print(f"MANUAL OVERRIDE: Turn set to {'White' if confirmed_active_color == 'w' else 'Black'}")
                 elif cmd.startswith("SET_THEME:"):
                     new_theme = cmd.split(":", 1)[1]
@@ -62,6 +63,7 @@ def capture_thread_func():
                     confirmed_fen = ""  # Force re-read
                     theme_detected = True
                     fen_builder.reset_orientation_lock()
+                    fen_builder.reset_turn_tracking()
                     print(f"Theme changed to: {new_theme}")
             except:
                 pass
@@ -113,7 +115,7 @@ def capture_thread_func():
         # Build FEN using the last CONFIRMED FEN state as reference
         try:
             fen_str, current_grid, is_flipped, returned_active, orient_source, piece_count, matched = fen_builder.build_fen(
-                board_img, templates, confirmed_fen, confirmed_active_color
+                board_img, templates, confirmed_fen, confirmed_active_color, confirmed_grid
             )
         except Exception as e:
             print(f"FEN build error: {e}")
@@ -122,8 +124,13 @@ def capture_thread_func():
         if fen_str is None:
             continue
         
-        # Only process if something changed from the last confirmed FEN
-        if fen_str == confirmed_fen:
+        # --- Fix 3: Placement-only dedup (ignore active color in comparison) ---
+        new_placement = fen_str.split(" ")[0]
+        confirmed_placement = confirmed_fen.split(" ")[0] if confirmed_fen else ""
+        
+        if new_placement == confirmed_placement:
+            # Board hasn't changed — update active color but don't re-analyze
+            confirmed_active_color = returned_active
             unmatched_frames_count = 0
             continue
             
@@ -158,6 +165,7 @@ def capture_thread_func():
                     "fps": fps,
                     "confidence": piece_count,
                     "orientation_source": orient_source,
+                    "active_turn": returned_active,
                     "last_error": "None",
                 }
             })
@@ -190,7 +198,7 @@ def capture_thread_func():
         
         try:
             fen_str, current_grid, is_flipped, returned_active, orient_source, piece_count, matched2 = fen_builder.build_fen(
-                board_img2, templates, confirmed_fen, confirmed_active_color
+                board_img2, templates, confirmed_fen, confirmed_active_color, confirmed_grid
             )
         except Exception as e:
             print(f"FEN re-build error: {e}")
@@ -218,6 +226,7 @@ def capture_thread_func():
                 "fps": fps,
                 "confidence": piece_count,
                 "orientation_source": orient_source,
+                "active_turn": returned_active,
                 "last_error": "None",
             }
         })
