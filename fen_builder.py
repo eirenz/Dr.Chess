@@ -690,7 +690,31 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
         new_active_color = 'b' if new_active_color == 'w' else 'w'
         print(f"[TURN] Parity enforced: flipped to {new_active_color}")
     
-    fen_string = f"{placement} {new_active_color} - - 0 1"
+    def _get_safe_castling_rights(placement_str: str, desired_rights: str) -> str:
+        if not desired_rights or desired_rights == "-":
+            return "-"
+        try:
+            b = chess.Board(f"{placement_str} w - - 0 1")
+        except Exception:
+            return "-"
+            
+        safe = ""
+        if "K" in desired_rights and b.piece_at(chess.E1) == chess.Piece.from_symbol('K') and b.piece_at(chess.H1) == chess.Piece.from_symbol('R'): safe += "K"
+        if "Q" in desired_rights and b.piece_at(chess.E1) == chess.Piece.from_symbol('K') and b.piece_at(chess.A1) == chess.Piece.from_symbol('R'): safe += "Q"
+        if "k" in desired_rights and b.piece_at(chess.E8) == chess.Piece.from_symbol('k') and b.piece_at(chess.H8) == chess.Piece.from_symbol('r'): safe += "k"
+        if "q" in desired_rights and b.piece_at(chess.E8) == chess.Piece.from_symbol('k') and b.piece_at(chess.A8) == chess.Piece.from_symbol('r'): safe += "q"
+        return safe if safe else "-"
+
+    # Determine desired rights
+    desired_rights = "KQkq"
+    if prev_fen:
+        try:
+            desired_rights = chess.Board(prev_fen).castling_xfen()
+        except:
+            desired_rights = "-"
+
+    safe_castling = _get_safe_castling_rights(placement, desired_rights)
+    fen_string = f"{placement} {new_active_color} {safe_castling} - 0 1"
     
     # --- Layer 4: Strict python-chess validation ---
     try:
