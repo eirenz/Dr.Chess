@@ -90,6 +90,10 @@ class Analyzer:
         
         try:
             board = chess.Board(fen)
+            if not board.is_valid():
+                print(f"[Analyzer] Rejecting strictly invalid FEN: {fen} - Status: {board.status()}")
+                return None
+                
             if not board.king(chess.WHITE) or not board.king(chess.BLACK):
                 return None
                 

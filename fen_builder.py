@@ -559,19 +559,39 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
             gray_sq = cv2.cvtColor(neutral, cv2.COLOR_BGR2GRAY)
             
             best_score = -1
+            second_score = -1
             best_piece_candidate = '.'
+            
             for p_code, tmpl_gray in _gray_templates.items():
                 res = cv2.matchTemplate(gray_sq, tmpl_gray, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, _ = cv2.minMaxLoc(res)
                 if max_val > best_score:
+                    second_score = best_score
                     best_score = max_val
                     best_piece_candidate = p_code
+                elif max_val > second_score:
+                    second_score = max_val
             
-            if best_score >= config.MATCH_THRESHOLD:
+            gap = best_score - second_score
+            is_piece = False
+            if best_score >= 0.75:
+                is_piece = True  # Very high confidence
+            elif best_score >= 0.60 and gap >= 0.08:
+                is_piece = True  # Moderate confidence but clear winner
+                
+            if is_piece:
                 current_grid.append(best_piece_candidate)
             else:
                 current_grid.append('.')
     
+    # --- Contextual Frame Correction ---
+    if prev_grid is not None and len(prev_grid) == 64 and bool(prev_fen):
+        diff_count = sum(1 for i in range(64) if current_grid[i] != prev_grid[i])
+        if diff_count > 4:
+            print(f"[FEN] Frame rejected: {diff_count} squares changed (max 4). Likely vision glitch.")
+            is_flipped, orientation_source = get_board_orientation(prev_grid)
+            return prev_fen, prev_grid[:], is_flipped, prev_active_fallback, orientation_source, sum(1 for p in prev_grid if p != '.'), False
+
     # Update caches
     _prev_square_hashes = new_hashes
     _prev_grid_cache = current_grid[:]
@@ -671,6 +691,27 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
         print(f"[TURN] Parity enforced: flipped to {new_active_color}")
     
     fen_string = f"{placement} {new_active_color} - - 0 1"
+    
+    # --- Layer 4: Strict python-chess validation ---
+    try:
+        board = chess.Board(fen_string)
+        if not board.is_valid():
+            # Try flipping the inferred turn
+            alt_color = 'b' if new_active_color == 'w' else 'w'
+            alt_fen = f"{placement} {alt_color} - - 0 1"
+            alt_board = chess.Board(alt_fen)
+            
+            if alt_board.is_valid():
+                new_active_color = alt_color
+                fen_string = alt_fen
+                print(f"[FEN] Flipped turn to {new_active_color} because original was invalid.")
+            else:
+                print(f"[FEN] Validation FAILED: Board is strictly invalid. Status: {board.status()}")
+                return None, current_grid, is_flipped, prev_active_fallback, orientation_source, piece_count, False
+    except ValueError as e:
+        print(f"[FEN] Validation FAILED: {e}")
+        return None, current_grid, is_flipped, prev_active_fallback, orientation_source, piece_count, False
+
     print(f"[FEN] Resync: {fen_string} [orient={orientation_source}, pieces={piece_count}]")
     
     _last_emitted_turn = new_active_color
