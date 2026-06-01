@@ -131,7 +131,7 @@ class Analyzer:
                 mate_in = None
                 if score.is_mate():
                     mate_in = score.mate()
-                    cp_score = 10000 if mate_in > 0 else -10000
+                    cp_score = 10000 - mate_in if mate_in > 0 else -10000 - mate_in
                 else:
                     cp_score = score.score()
                 

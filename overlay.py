@@ -68,6 +68,19 @@ class ChessOverlay(QMainWindow):
         self.anim_opacity.setStartValue(0.0)
         self.anim_opacity.setEndValue(1.0)
         
+        # Forced Mate badge
+        self.mate_badge = QLabel(self)
+        self.mate_badge.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        self.mate_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mate_badge.hide()
+        
+        self.mate_effect = QGraphicsOpacityEffect(self.mate_badge)
+        self.mate_badge.setGraphicsEffect(self.mate_effect)
+        self.mate_anim = QPropertyAnimation(self.mate_effect, b"opacity")
+        self.mate_anim.setDuration(200)
+        self.mate_anim.setStartValue(0.0)
+        self.mate_anim.setEndValue(1.0)
+        
         # --- Part 1: Partial update gating ---
         self.last_fen = ""
         self.last_cp = 0
@@ -251,11 +264,24 @@ class ChessOverlay(QMainWindow):
             self.anim_split.start()
             
             if score > 5000:
-                self.cp_text = f"M{10000 - score}"
+                mate_in = 10000 - score
+                self.cp_text = f"M{mate_in}"
+                if not self.is_hidden:
+                    self.mate_badge.setText(f"MATE IN {mate_in}")
+                    self.mate_badge.setStyleSheet("background-color: rgba(30, 215, 96, 220); color: white; border-radius: 8px;")
+                    self.mate_badge.setGeometry(bar_w + 10, 10, 160, 40)
+                    self.mate_badge.show()
             elif score < -5000:
-                self.cp_text = f"-M{10000 + score}"
+                mate_in = 10000 + score
+                self.cp_text = f"-M{mate_in}"
+                if not self.is_hidden:
+                    self.mate_badge.setText(f"MATE IN {mate_in}")
+                    self.mate_badge.setStyleSheet("background-color: rgba(255, 30, 30, 220); color: white; border-radius: 8px;")
+                    self.mate_badge.setGeometry(bar_w + 10, 10, 160, 40)
+                    self.mate_badge.show()
             else:
                 self.cp_text = f"{score/100:.1f}"
+                self.mate_badge.hide()
                 
             if res.cp_loss is not None and not self.is_hidden:
                 rating = classify_move(res.cp_loss)
@@ -391,6 +417,27 @@ class ChessOverlay(QMainWindow):
             painter.setBrush(QBrush(color_target))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawPolygon([QPoint(int(x2), int(y2)), p1, p2])
+            
+            # --- Draw Mate Text on Arrow ---
+            if move.mate_in is not None:
+                # Draw text with a small dark outline for readability
+                mate_str = f"M{abs(move.mate_in)}"
+                text_x = x2 - arrow_len * 2.0 * math.cos(angle)
+                text_y = y2 - arrow_len * 2.0 * math.sin(angle)
+                
+                mate_font = painter.font()
+                mate_font.setPixelSize(16 if i == 0 else 12) # Bigger for top move
+                mate_font.setBold(True)
+                painter.setFont(mate_font)
+                
+                rect_x, rect_y = int(text_x) - 20, int(text_y) - 10
+                
+                # Outline
+                painter.setPen(QPen(QColor("#000000"), 3))
+                painter.drawText(rect_x, rect_y, 40, 20, Qt.AlignmentFlag.AlignCenter, mate_str)
+                # Fill
+                painter.setPen(QPen(QColor("#ffffff")))
+                painter.drawText(rect_x, rect_y, 40, 20, Qt.AlignmentFlag.AlignCenter, mate_str)
 
         # --- Part 5: Red border when board is lost ---
         if self._board_lost:
