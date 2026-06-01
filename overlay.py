@@ -263,22 +263,22 @@ class ChessOverlay(QMainWindow):
             self.anim_split.setEndValue(float(target))
             self.anim_split.start()
             
-            if score > 5000:
-                mate_in = 10000 - score
-                self.cp_text = f"M{mate_in}"
-                if not self.is_hidden:
-                    self.mate_badge.setText(f"MATE IN {mate_in}")
-                    self.mate_badge.setStyleSheet("background-color: rgba(30, 215, 96, 220); color: white; border-radius: 8px;")
-                    self.mate_badge.setGeometry(bar_w + 10, 10, 160, 40)
-                    self.mate_badge.show()
-            elif score < -5000:
-                mate_in = 10000 + score
-                self.cp_text = f"-M{mate_in}"
-                if not self.is_hidden:
-                    self.mate_badge.setText(f"MATE IN {mate_in}")
-                    self.mate_badge.setStyleSheet("background-color: rgba(255, 30, 30, 220); color: white; border-radius: 8px;")
-                    self.mate_badge.setGeometry(bar_w + 10, 10, 160, 40)
-                    self.mate_badge.show()
+            if self.top_moves and self.top_moves[0].mate_in is not None:
+                mate_in = self.top_moves[0].mate_in
+                if mate_in > 0:
+                    self.cp_text = f"M{mate_in}"
+                    if not self.is_hidden:
+                        self.mate_badge.setText(f"MATE IN {mate_in}")
+                        self.mate_badge.setStyleSheet("background-color: rgba(30, 215, 96, 220); color: white; border-radius: 8px;")
+                        self.mate_badge.setGeometry(bar_w + 10, 10, 160, 40)
+                        self.mate_badge.show()
+                else:
+                    self.cp_text = f"-M{abs(mate_in)}"
+                    if not self.is_hidden:
+                        self.mate_badge.setText(f"MATE IN {abs(mate_in)}")
+                        self.mate_badge.setStyleSheet("background-color: rgba(255, 30, 30, 220); color: white; border-radius: 8px;")
+                        self.mate_badge.setGeometry(bar_w + 10, 10, 160, 40)
+                        self.mate_badge.show()
             else:
                 self.cp_text = f"{score/100:.1f}"
                 self.mate_badge.hide()
