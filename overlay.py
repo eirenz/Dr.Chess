@@ -10,6 +10,7 @@ from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPainterPath, QPi
 import config
 from classifier import classify_move
 import sounds
+from premove_ui import PremoveDialog
 
 # Win32 z-order enforcement
 if sys.platform == 'win32':
@@ -23,6 +24,9 @@ class ChessOverlay(QMainWindow):
         self.result_queue = result_queue
         self.is_flipped = False
         self.should_be_visible = True
+        
+        self.premove_dialog = PremoveDialog()
+        self.premove_dialog.toggled.connect(self.update)
         
         # --- Part 1: Indestructible Window Flags ---
         self.setWindowFlags(
@@ -265,6 +269,14 @@ class ChessOverlay(QMainWindow):
             
             if self.top_moves and self.top_moves[0].mate_in is not None:
                 mate_in = self.top_moves[0].mate_in
+                
+                # Update premove dialog with full sequence
+                self.premove_dialog.update_mate(
+                    mate_in, 
+                    self.top_moves[0].san_sequence, 
+                    (win_x, win_y, win_w, win_h)
+                )
+                
                 if mate_in > 0:
                     self.cp_text = f"M{mate_in}"
                     if not self.is_hidden:
@@ -282,6 +294,7 @@ class ChessOverlay(QMainWindow):
             else:
                 self.cp_text = f"{score/100:.1f}"
                 self.mate_badge.hide()
+                self.premove_dialog.update_mate(None, "", (0,0,0,0))
                 
             if res.cp_loss is not None and not self.is_hidden:
                 rating = classify_move(res.cp_loss)
@@ -357,87 +370,109 @@ class ChessOverlay(QMainWindow):
             
             if not move.uci or len(move.uci) < 4: continue
             
-            scol = ord(move.uci[0]) - ord('a')
-            srow = 8 - int(move.uci[1])
-            tcol = ord(move.uci[2]) - ord('a')
-            trow = 8 - int(move.uci[3])
+            ucis_to_draw = [move.uci]
+            is_premove = False
             
-            if self.is_flipped:
-                scol, srow = 7 - scol, 7 - srow
-                tcol, trow = 7 - tcol, 7 - trow
+            if i == 0 and move.mate_in is not None and getattr(self, 'premove_dialog', None) and self.premove_dialog.is_enabled:
+                if getattr(move, 'pv_sequence', None):
+                    ucis_to_draw = move.pv_sequence
+                    is_premove = True
+            
+            for j, uci_str in enumerate(ucis_to_draw):
+                if len(uci_str) < 4: continue
                 
-            x1 = bar_w + scol * sq + sq / 2
-            y1 = srow * sq + sq / 2
-            x2 = bar_w + tcol * sq + sq / 2
-            y2 = trow * sq + sq / 2
-            
-            if x1 == x2 and y1 == y2: continue
-            
-            base_color = QColor(color_stops[i])
-            base_opacity = config.OVERLAY_OPACITY
-            
-            color_target = QColor(base_color)
-            color_target.setAlphaF(base_opacity)
-            
-            color_source = QColor(base_color)
-            color_source.setAlphaF(0.0) # Fade to transparent at source
+                scol = ord(uci_str[0]) - ord('a')
+                srow = 8 - int(uci_str[1])
+                tcol = ord(uci_str[2]) - ord('a')
+                trow = 8 - int(uci_str[3])
+                
+                if self.is_flipped:
+                    scol, srow = 7 - scol, 7 - srow
+                    tcol, trow = 7 - tcol, 7 - trow
+                    
+                x1 = bar_w + scol * sq + sq / 2
+                y1 = srow * sq + sq / 2
+                x2 = bar_w + tcol * sq + sq / 2
+                y2 = trow * sq + sq / 2
+                
+                if x1 == x2 and y1 == y2: continue
+                
+                if is_premove:
+                    base_opacity = max(0.2, config.OVERLAY_OPACITY - (j * 0.1))
+                    if j % 2 == 0:
+                        base_color = QColor("#00f2fe") # Your move
+                    else:
+                        base_color = QColor("#ff0844") # Opponent's move
+                    arrow_w = max(4, widths[0] - j)
+                    glow_w = max(8, glow_widths[0] - j)
+                else:
+                    base_color = QColor(color_stops[i])
+                    base_opacity = config.OVERLAY_OPACITY
+                    arrow_w = widths[i]
+                    glow_w = glow_widths[i]
+                
+                color_target = QColor(base_color)
+                color_target.setAlphaF(base_opacity)
+                
+                color_source = QColor(base_color)
+                color_source.setAlphaF(0.0) # Fade to transparent at source
 
-            # Create body gradient
-            gradient = QLinearGradient(QPointF(x1, y1), QPointF(x2, y2))
-            gradient.setColorAt(0.0, color_source)
-            gradient.setColorAt(1.0, color_target)
+                # Create body gradient
+                gradient = QLinearGradient(QPointF(x1, y1), QPointF(x2, y2))
+                gradient.setColorAt(0.0, color_source)
+                gradient.setColorAt(1.0, color_target)
 
-            # Create glow gradient (more transparent, wider)
-            glow_grad = QLinearGradient(QPointF(x1, y1), QPointF(x2, y2))
-            glow_color = QColor(base_color)
-            glow_color.setAlphaF(0.0)
-            glow_grad.setColorAt(0.0, glow_color)
-            glow_color.setAlphaF(base_opacity * 0.4)
-            glow_grad.setColorAt(1.0, glow_color)
-            
-            # --- Draw Glow ---
-            glow_pen = QPen(QBrush(glow_grad), glow_widths[i], Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-            painter.setPen(glow_pen)
-            painter.drawLine(int(x1), int(y1), int(x2), int(y2))
-            
-            # --- Draw Main Body ---
-            main_pen = QPen(QBrush(gradient), widths[i], Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-            painter.setPen(main_pen)
-            painter.drawLine(int(x1), int(y1), int(x2), int(y2))
-            
-            # --- Draw Arrow Head ---
-            angle = math.atan2(y2 - y1, x2 - x1)
-            arrow_len = widths[i] * 3
-            
-            p1 = QPoint(int(x2 - arrow_len * math.cos(angle - math.pi / 6)),
-                        int(y2 - arrow_len * math.sin(angle - math.pi / 6)))
-            p2 = QPoint(int(x2 - arrow_len * math.cos(angle + math.pi / 6)),
-                        int(y2 - arrow_len * math.sin(angle + math.pi / 6)))
-            
-            painter.setBrush(QBrush(color_target))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawPolygon([QPoint(int(x2), int(y2)), p1, p2])
-            
-            # --- Draw Mate Text on Arrow ---
-            if move.mate_in is not None:
-                # Draw text with a small dark outline for readability
-                mate_str = f"M{abs(move.mate_in)}"
-                text_x = x2 - arrow_len * 2.0 * math.cos(angle)
-                text_y = y2 - arrow_len * 2.0 * math.sin(angle)
+                # Create glow gradient (more transparent, wider)
+                glow_grad = QLinearGradient(QPointF(x1, y1), QPointF(x2, y2))
+                glow_color = QColor(base_color)
+                glow_color.setAlphaF(0.0)
+                glow_grad.setColorAt(0.0, glow_color)
+                glow_color.setAlphaF(base_opacity * 0.4)
+                glow_grad.setColorAt(1.0, glow_color)
                 
-                mate_font = painter.font()
-                mate_font.setPixelSize(16 if i == 0 else 12) # Bigger for top move
-                mate_font.setBold(True)
-                painter.setFont(mate_font)
+                # --- Draw Glow ---
+                glow_pen = QPen(QBrush(glow_grad), glow_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+                painter.setPen(glow_pen)
+                painter.drawLine(int(x1), int(y1), int(x2), int(y2))
                 
-                rect_x, rect_y = int(text_x) - 20, int(text_y) - 10
+                # --- Draw Main Body ---
+                main_pen = QPen(QBrush(gradient), arrow_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+                painter.setPen(main_pen)
+                painter.drawLine(int(x1), int(y1), int(x2), int(y2))
                 
-                # Outline
-                painter.setPen(QPen(QColor("#000000"), 3))
-                painter.drawText(rect_x, rect_y, 40, 20, Qt.AlignmentFlag.AlignCenter, mate_str)
-                # Fill
-                painter.setPen(QPen(QColor("#ffffff")))
-                painter.drawText(rect_x, rect_y, 40, 20, Qt.AlignmentFlag.AlignCenter, mate_str)
+                # --- Draw Arrow Head ---
+                angle = math.atan2(y2 - y1, x2 - x1)
+                arrow_len = arrow_w * 3
+                
+                p1 = QPoint(int(x2 - arrow_len * math.cos(angle - math.pi / 6)),
+                            int(y2 - arrow_len * math.sin(angle - math.pi / 6)))
+                p2 = QPoint(int(x2 - arrow_len * math.cos(angle + math.pi / 6)),
+                            int(y2 - arrow_len * math.sin(angle + math.pi / 6)))
+                
+                painter.setBrush(QBrush(color_target))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawPolygon([QPoint(int(x2), int(y2)), p1, p2])
+                
+                # --- Draw Mate Text on Arrow ---
+                if move.mate_in is not None and j == 0:
+                    # Draw text with a small dark outline for readability
+                    mate_str = f"M{abs(move.mate_in)}"
+                    text_x = x2 - arrow_len * 2.0 * math.cos(angle)
+                    text_y = y2 - arrow_len * 2.0 * math.sin(angle)
+                    
+                    mate_font = painter.font()
+                    mate_font.setPixelSize(16 if i == 0 else 12) # Bigger for top move
+                    mate_font.setBold(True)
+                    painter.setFont(mate_font)
+                    
+                    rect_x, rect_y = int(text_x) - 20, int(text_y) - 10
+                    
+                    # Outline
+                    painter.setPen(QPen(QColor("#000000"), 3))
+                    painter.drawText(rect_x, rect_y, 40, 20, Qt.AlignmentFlag.AlignCenter, mate_str)
+                    # Fill
+                    painter.setPen(QPen(QColor("#ffffff")))
+                    painter.drawText(rect_x, rect_y, 40, 20, Qt.AlignmentFlag.AlignCenter, mate_str)
 
         # --- Part 5: Red border when board is lost ---
         if self._board_lost:

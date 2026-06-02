@@ -11,6 +11,8 @@ class MoveResult:
     cp_score: Optional[int]
     mate_in: Optional[int]
     rank: int
+    pv_sequence: List[str] = None
+    san_sequence: str = ""
 
 @dataclass
 class AnalysisResult:
@@ -135,11 +137,47 @@ class Analyzer:
                 else:
                     cp_score = score.score()
                 
+                pv_nodes = info.get("pv", [])
+                pv_sequence = [m.uci() for m in pv_nodes]
+                
+                san_sequence = ""
+                if pv_nodes:
+                    # To generate SAN, we need to push moves to a copy of the board
+                    try:
+                        b_copy = board.copy()
+                        san_moves = []
+                        for m in pv_nodes:
+                            if b_copy.is_legal(m):
+                                san_moves.append(b_copy.san(m))
+                                b_copy.push(m)
+                            else:
+                                break
+                        
+                        # Format as "1. e4 e5 2. Nf3" 
+                        turn = board.turn
+                        full_move = board.fullmove_number
+                        san_parts = []
+                        for i, san_m in enumerate(san_moves):
+                            if turn == chess.WHITE:
+                                san_parts.append(f"{full_move}. {san_m}")
+                            else:
+                                if i == 0:
+                                    san_parts.append(f"{full_move}... {san_m}")
+                                else:
+                                    san_parts.append(san_m)
+                                full_move += 1
+                            turn = not turn
+                        san_sequence = " ".join(san_parts)
+                    except:
+                        san_sequence = " ".join(pv_sequence) # fallback
+                
                 top_moves.append(MoveResult(
-                    uci=info.get("pv", [chess.Move.null()])[0].uci() if "pv" in info else "",
+                    uci=pv_sequence[0] if pv_sequence else "",
                     cp_score=cp_score,
                     mate_in=mate_in,
-                    rank=i + 1
+                    rank=i + 1,
+                    pv_sequence=pv_sequence,
+                    san_sequence=san_sequence
                 ))
                 max_depth = max(max_depth, info.get("depth", 0))
                 
