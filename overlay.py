@@ -451,6 +451,40 @@ class ChessOverlay(QMainWindow):
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.drawPolygon([QPoint(int(x2), int(y2)), p1, p2])
                 
+                # --- Draw Sequence Number Badge (if premove) ---
+                if is_premove:
+                    mid_x = (x1 + x2) / 2
+                    mid_y = (y1 + y2) / 2
+                    
+                    badge_radius = 12
+                    
+                    # Draw background circle
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(30, 30, 30, 220)) # Dark transparent bg
+                    painter.drawEllipse(QPoint(int(mid_x), int(mid_y)), badge_radius, badge_radius)
+                    
+                    # Draw border
+                    border_color = QColor(base_color)
+                    border_color.setAlphaF(1.0)
+                    painter.setPen(QPen(border_color, 2))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawEllipse(QPoint(int(mid_x), int(mid_y)), badge_radius, badge_radius)
+                    
+                    # Draw number text
+                    badge_font = painter.font()
+                    badge_font.setPixelSize(13)
+                    badge_font.setBold(True)
+                    painter.setFont(badge_font)
+                    painter.setPen(QColor(255, 255, 255)) # White text
+                    painter.drawText(
+                        int(mid_x) - badge_radius, 
+                        int(mid_y) - badge_radius, 
+                        badge_radius * 2, 
+                        badge_radius * 2, 
+                        Qt.AlignmentFlag.AlignCenter, 
+                        str(j + 1)
+                    )
+                
                 # --- Draw Mate Text on Arrow ---
                 if move.mate_in is not None and j == 0:
                     # Draw text with a small dark outline for readability
