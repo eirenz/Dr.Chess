@@ -30,8 +30,14 @@ class PremoveDialog(QWidget):
                 color: #ff3333;
             }
             QLabel#sequence {
+                font-size: 12px;
+                color: #aaaaaa;
+                padding: 5px;
+            }
+            QLabel#safe_sequence {
                 font-size: 14px;
-                color: #00f2fe;
+                color: #ffd700;
+                font-weight: bold;
                 padding: 10px;
                 background: rgba(0,0,0,100);
                 border-radius: 5px;
@@ -56,6 +62,11 @@ class PremoveDialog(QWidget):
         self.lbl_title.setObjectName("title")
         self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
+        self.lbl_safe_sequence = QLabel("...")
+        self.lbl_safe_sequence.setObjectName("safe_sequence")
+        self.lbl_safe_sequence.setWordWrap(True)
+        self.lbl_safe_sequence.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        
         self.lbl_sequence = QLabel("...")
         self.lbl_sequence.setObjectName("sequence")
         self.lbl_sequence.setWordWrap(True)
@@ -67,11 +78,14 @@ class PremoveDialog(QWidget):
         self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
         layout.addWidget(self.lbl_title)
+        layout.addWidget(QLabel("Safe Premoves:"))
+        layout.addWidget(self.lbl_safe_sequence)
+        layout.addWidget(QLabel("Full Sequence:"))
         layout.addWidget(self.lbl_sequence)
         layout.addWidget(self.toggle_btn)
         
         self.setLayout(layout)
-        self.resize(250, 150)
+        self.resize(250, 200)
         
         self.is_enabled = False
         self.current_mate = None
@@ -86,15 +100,25 @@ class PremoveDialog(QWidget):
             self.toggle_btn.setStyleSheet("background-color: #4CAF50;")
         self.toggled.emit(checked)
 
-    def update_mate(self, mate_in, san_sequence, board_rect):
+    def update_mate(self, mate_in, san_sequence, safe_san_sequence, board_rect):
         """
         board_rect is (x, y, w, h) of the chessboard
         """
         if mate_in is not None and mate_in > 0:
             if self.current_mate != mate_in:
                 self.current_mate = mate_in
-                self.lbl_title.setText(f"Forced Mate in {mate_in}!")
-                self.lbl_sequence.setText(san_sequence)
+                
+                # If the entire sequence is safe, the safe_san_sequence will equal san_sequence
+                if safe_san_sequence and safe_san_sequence == san_sequence:
+                    self.lbl_title.setText(f"Forced Mate in {mate_in}! (100% SAFE)")
+                    self.lbl_title.setStyleSheet("color: #4CAF50;")
+                    self.lbl_safe_sequence.setText(safe_san_sequence)
+                    self.lbl_sequence.setText("All moves are strictly forced.")
+                else:
+                    self.lbl_title.setText(f"Forced Mate in {mate_in}!")
+                    self.lbl_title.setStyleSheet("color: #ff3333;")
+                    self.lbl_safe_sequence.setText(safe_san_sequence if safe_san_sequence else "None. Play normally.")
+                    self.lbl_sequence.setText(san_sequence)
                 
             if self.isHidden():
                 # Position it slightly to the right of the board

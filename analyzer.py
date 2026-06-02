@@ -13,6 +13,8 @@ class MoveResult:
     rank: int
     pv_sequence: List[str] = None
     san_sequence: str = ""
+    safe_pv_sequence: List[str] = None
+    safe_san_sequence: str = ""
 
 @dataclass
 class AnalysisResult:
@@ -140,22 +142,24 @@ class Analyzer:
                 pv_nodes = info.get("pv", [])
                 pv_sequence = [m.uci() for m in pv_nodes]
                 
-                san_sequence = ""
+                safe_nodes = []
                 if pv_nodes:
-                    # To generate SAN, we need to push moves to a copy of the board
+                    safe_nodes = self._get_safe_premoves(board, pv_nodes)
+                safe_pv_sequence = [m.uci() for m in safe_nodes]
+                
+                def _generate_san(b_start, nodes):
+                    if not nodes: return ""
                     try:
-                        b_copy = board.copy()
+                        b_copy = b_start.copy()
                         san_moves = []
-                        for m in pv_nodes:
+                        for m in nodes:
                             if b_copy.is_legal(m):
                                 san_moves.append(b_copy.san(m))
                                 b_copy.push(m)
                             else:
                                 break
-                        
-                        # Format as "1. e4 e5 2. Nf3" 
-                        turn = board.turn
-                        full_move = board.fullmove_number
+                        turn = b_start.turn
+                        full_move = b_start.fullmove_number
                         san_parts = []
                         for i, san_m in enumerate(san_moves):
                             if turn == chess.WHITE:
@@ -167,9 +171,12 @@ class Analyzer:
                                     san_parts.append(san_m)
                                 full_move += 1
                             turn = not turn
-                        san_sequence = " ".join(san_parts)
+                        return " ".join(san_parts)
                     except:
-                        san_sequence = " ".join(pv_sequence) # fallback
+                        return " ".join([m.uci() for m in nodes])
+                
+                san_sequence = _generate_san(board, pv_nodes)
+                safe_san_sequence = _generate_san(board, safe_nodes)
                 
                 top_moves.append(MoveResult(
                     uci=pv_sequence[0] if pv_sequence else "",
@@ -177,7 +184,9 @@ class Analyzer:
                     mate_in=mate_in,
                     rank=i + 1,
                     pv_sequence=pv_sequence,
-                    san_sequence=san_sequence
+                    san_sequence=san_sequence,
+                    safe_pv_sequence=safe_pv_sequence,
+                    safe_san_sequence=safe_san_sequence
                 ))
                 max_depth = max(max_depth, info.get("depth", 0))
                 
@@ -210,3 +219,48 @@ class Analyzer:
         except Exception as e:
             print(f"Analysis error: {e}")
             return None
+
+    def _get_safe_premoves(self, board: chess.Board, pv_nodes: List[chess.Move]) -> List[chess.Move]:
+        safe_nodes = []
+        b = board.copy()
+        
+        for i in range(len(pv_nodes)):
+            move = pv_nodes[i]
+            
+            is_our_turn = (i % 2 == 0)
+            
+            if is_our_turn:
+                if b.is_legal(move):
+                    safe_nodes.append(move)
+                    b.push(move)
+                else:
+                    break
+            else:
+                if i + 1 >= len(pv_nodes):
+                    if b.is_legal(move):
+                        safe_nodes.append(move)
+                    break
+                    
+                next_our_move = pv_nodes[i+1]
+                legal_moves = list(b.legal_moves)
+                is_safe = True
+                
+                if len(legal_moves) > 1:
+                    for alt_move in legal_moves:
+                        if alt_move != move:
+                            b_alt = b.copy()
+                            b_alt.push(alt_move)
+                            if b_alt.is_legal(next_our_move):
+                                is_safe = False
+                                break
+                
+                if not is_safe:
+                    break
+                    
+                if b.is_legal(move):
+                    safe_nodes.append(move)
+                    b.push(move)
+                else:
+                    break
+                    
+        return safe_nodes

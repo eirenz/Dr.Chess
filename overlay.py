@@ -274,6 +274,7 @@ class ChessOverlay(QMainWindow):
                 self.premove_dialog.update_mate(
                     mate_in, 
                     self.top_moves[0].san_sequence, 
+                    self.top_moves[0].safe_san_sequence,
                     (win_x, win_y, win_w, win_h)
                 )
                 
@@ -294,7 +295,7 @@ class ChessOverlay(QMainWindow):
             else:
                 self.cp_text = f"{score/100:.1f}"
                 self.mate_badge.hide()
-                self.premove_dialog.update_mate(None, "", (0,0,0,0))
+                self.premove_dialog.update_mate(None, "", "", (0,0,0,0))
                 
             if res.cp_loss is not None and not self.is_hidden:
                 rating = classify_move(res.cp_loss)
@@ -374,8 +375,8 @@ class ChessOverlay(QMainWindow):
             is_premove = False
             
             if i == 0 and move.mate_in is not None and getattr(self, 'premove_dialog', None) and self.premove_dialog.is_enabled:
-                if getattr(move, 'pv_sequence', None):
-                    ucis_to_draw = move.pv_sequence
+                if getattr(move, 'safe_pv_sequence', None):
+                    ucis_to_draw = move.safe_pv_sequence
                     is_premove = True
             
             for j, uci_str in enumerate(ucis_to_draw):
@@ -398,11 +399,8 @@ class ChessOverlay(QMainWindow):
                 if x1 == x2 and y1 == y2: continue
                 
                 if is_premove:
-                    base_opacity = max(0.2, config.OVERLAY_OPACITY - (j * 0.1))
-                    if j % 2 == 0:
-                        base_color = QColor("#00f2fe") # Your move
-                    else:
-                        base_color = QColor("#ff0844") # Opponent's move
+                    base_opacity = max(0.2, config.OVERLAY_OPACITY - (j * 0.15))
+                    base_color = QColor("#ffd700") # Safe Gold
                     arrow_w = max(4, widths[0] - j)
                     glow_w = max(8, glow_widths[0] - j)
                 else:
