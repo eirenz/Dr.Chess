@@ -1,94 +1,106 @@
 """
-Download popular Chess.com piece themes from GitHub.
+Download ALL Chess.com piece and board themes from GitHub.
 Source: https://github.com/GiorgioMegrelli/chess.com-boards-and-pieces
 
-Downloads 15 of the most popular 2D themes (~300KB total).
-Skips themes that already exist locally.
+Downloads 38 piece themes (12 images each) and 30 board themes.
+Skips files that already exist locally.
 """
 
 import requests
 import os
+import sys
 
-PIECES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pieces")
+# Workspace paths
+WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
+PIECES_DIR = os.path.join(WORKSPACE_DIR, "pieces")
+BOARDS_DIR = os.path.join(WORKSPACE_DIR, "boards")
 
-BASE_URL = "https://raw.githubusercontent.com/GiorgioMegrelli/chess.com-boards-and-pieces/master/pieces"
+API_BASE = "https://api.github.com/repos/GiorgioMegrelli/chess.com-boards-and-pieces/contents"
+RAW_BASE = "https://raw.githubusercontent.com/GiorgioMegrelli/chess.com-boards-and-pieces/master"
 
 PIECE_FILES = ["bb", "bk", "bn", "bp", "bq", "br", "wb", "wk", "wn", "wp", "wq", "wr"]
 
-# Top 15 most popular 2D Chess.com piece themes
-THEMES_TO_DOWNLOAD = [
-    "neo",        # Default Chess.com theme
-    "classic",    # Most popular alternative
-    "neo_wood",   # Popular variant of neo
-    "wood",       # Traditional players
-    "glass",      # Popular modern look
-    "metal",      # Commonly used
-    "modern",     # Clean minimal style
-    "tournament", # Serious/competitive players
-    "bases",      # Common alternative
-    "ocean",      # Popular themed set
-    "marble",     # Premium style
-    "vintage",    # Nostalgic players
-    "club",       # Club environment
-    "book",       # Classic book style
-    "alpha",      # Clean design
-]
+def fetch_json(url):
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+        print(f"Failed to fetch {url} (HTTP {r.status_code})")
+    except Exception as e:
+        print(f"Error fetching {url}: {e}")
+    return []
 
+def download_file(url, filepath):
+    if os.path.exists(filepath):
+        return True # Already downloaded
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            with open(filepath, "wb") as f:
+                f.write(r.content)
+            return True
+    except:
+        pass
+    return False
 
 def download_themes():
     os.makedirs(PIECES_DIR, exist_ok=True)
+    os.makedirs(BOARDS_DIR, exist_ok=True)
     
-    total_downloaded = 0
-    total_skipped = 0
+    print("Fetching list of Piece themes from GitHub...")
+    pieces_data = fetch_json(f"{API_BASE}/pieces")
+    piece_themes = [item['name'] for item in pieces_data if item['type'] == 'dir']
     
-    for theme in THEMES_TO_DOWNLOAD:
+    print("Fetching list of Board themes from GitHub...")
+    boards_data = fetch_json(f"{API_BASE}/boards")
+    board_themes = [item['name'] for item in boards_data if item['type'] == 'file' and item['name'].endswith('.png')]
+    
+    print(f"\nFound {len(piece_themes)} Piece Themes and {len(board_themes)} Board Themes.")
+    
+    # 1. Download Piece Themes
+    print(f"\n--- Downloading Piece Themes (saving to {PIECES_DIR}) ---")
+    for i, theme in enumerate(piece_themes, 1):
         theme_dir = os.path.join(PIECES_DIR, theme)
-        
-        # Check if theme already has all 12 pieces
-        if os.path.isdir(theme_dir):
-            existing = [f for f in os.listdir(theme_dir) if f.endswith(".png")]
-            if len(existing) >= 12:
-                print(f"  [SKIP] {theme}: already complete ({len(existing)} pieces)")
-                total_skipped += 1
-                continue
-        
         os.makedirs(theme_dir, exist_ok=True)
+        
+        # Check completion
+        existing = [f for f in os.listdir(theme_dir) if f.endswith(".png")]
+        if len(existing) >= 12:
+            print(f"[{i}/{len(piece_themes)}] {theme}: Already complete (Skipping)")
+            continue
+            
         success = 0
-        failed = 0
+        sys.stdout.write(f"[{i}/{len(piece_themes)}] {theme}: Downloading... ")
+        sys.stdout.flush()
         
         for piece in PIECE_FILES:
             filename = f"{piece}.png"
             filepath = os.path.join(theme_dir, filename)
-            
-            if os.path.exists(filepath):
+            url = f"{RAW_BASE}/pieces/{theme}/{filename}"
+            if download_file(url, filepath):
                 success += 1
-                continue
-            
-            url = f"{BASE_URL}/{theme}/{filename}"
-            try:
-                r = requests.get(url, timeout=10)
-                if r.status_code == 200:
-                    with open(filepath, "wb") as f:
-                        f.write(r.content)
-                    success += 1
-                else:
-                    print(f"    [FAIL] {theme}/{filename} -- HTTP {r.status_code}")
-                    failed += 1
-            except Exception as e:
-                print(f"    [FAIL] {theme}/{filename} -- {e}")
-                failed += 1
-        
-        if failed == 0:
-            print(f"  [OK] {theme}: {success} pieces downloaded")
-            total_downloaded += 1
-        else:
-            print(f"  [WARN] {theme}: {success} OK, {failed} failed")
-            total_downloaded += 1
-    
-    print(f"\nDone! Downloaded: {total_downloaded}, Skipped: {total_skipped}")
-    print(f"Themes available in: {PIECES_DIR}")
+                
+        print(f"{success}/12 pieces OK")
 
+    # 2. Download Board Themes
+    print(f"\n--- Downloading Board Themes (saving to {BOARDS_DIR}) ---")
+    for i, board_img in enumerate(board_themes, 1):
+        filepath = os.path.join(BOARDS_DIR, board_img)
+        url = f"{RAW_BASE}/boards/{board_img}"
+        
+        if os.path.exists(filepath):
+            print(f"[{i}/{len(board_themes)}] {board_img}: Already exists (Skipping)")
+            continue
+            
+        sys.stdout.write(f"[{i}/{len(board_themes)}] {board_img}: Downloading... ")
+        sys.stdout.flush()
+        
+        if download_file(url, filepath):
+            print("OK")
+        else:
+            print("FAILED")
+
+    print("\nDownload complete! All assets are saved in the workspace.")
 
 if __name__ == "__main__":
-    print("Downloading Chess.com piece themes...\n")
     download_themes()

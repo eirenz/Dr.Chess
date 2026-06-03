@@ -6,6 +6,7 @@ CAPTURE_FPS = 10
 PIECE_THEME = "neo"
 PIECE_SIZE = 150
 PIECES_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "pieces")
+BOARDS_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "boards")
 MATCH_THRESHOLD = 0.65
 MOVE_ANIM_DELAY_MS = 150
 OVERLAY_OPACITY = 0.85
@@ -40,12 +41,10 @@ AUTO_ADAPTIVE_TIERS = [
 ]
 
 # ─── Multi-Theme Support ─────────────────────────────────────────
-# Available piece themes (downloaded via download_themes.py)
-AVAILABLE_THEMES = [
-    "neo", "classic", "neo_wood", "wood", "glass",
-    "metal", "modern", "tournament", "bases", "ocean",
-    "marble", "vintage", "club", "book", "alpha",
-]
+# Available piece themes (dynamically loaded from PIECES_DIR)
+AVAILABLE_THEMES = []
+if _os.path.exists(PIECES_DIR):
+    AVAILABLE_THEMES = [d for d in _os.listdir(PIECES_DIR) if _os.path.isdir(_os.path.join(PIECES_DIR, d)) and d != "blindfold"]
 
 # Active theme — set to "auto" for auto-detection on first frame
 ACTIVE_THEME = "auto"

@@ -92,7 +92,10 @@ def load_templates(theme_name: str = None) -> dict:
     for p_code, tmpl in templates.items():
         t = tmpl[:, :, :3] if len(tmpl.shape) == 3 and tmpl.shape[2] >= 3 else tmpl
         small = cv2.resize(t, (_FAST_SIZE, _FAST_SIZE))
-        _gray_templates[p_code] = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        if len(small.shape) == 3:
+            _gray_templates[p_code] = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        else:
+            _gray_templates[p_code] = small
     
     _active_theme_name = theme_name
     print(f"[FEN] Templates loaded for theme: {theme_name} ({len(templates)} pieces)")
@@ -138,45 +141,35 @@ def _load_theme_gray_templates(theme_name: str) -> dict:
         
         t = img[:, :, :3] if len(img.shape) == 3 and img.shape[2] >= 3 else img
         small = cv2.resize(t, (_FAST_SIZE, _FAST_SIZE))
-        gray_tmpls[p] = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        if len(small.shape) == 3:
+            gray_tmpls[p] = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        else:
+            gray_tmpls[p] = small
     
     return gray_tmpls
 
 
 def detect_best_theme(board_img: np.ndarray) -> str:
-    """Auto-detect the best matching piece theme by testing all available themes.
-    
-    Runs once on first board capture. Tests each theme's templates against
-    sample squares and returns the theme with highest average confidence.
-    
-    Args:
-        board_img: The captured board image (BGR).
-    
-    Returns:
-        Theme name string (e.g., "neo_wood").
+    """
+    Flawlessly auto-detects the active piece theme by scanning all 64 squares.
+    Calculates the best match score for each square across all templates of a theme,
+    sorts the scores, and averages the top 12 squares (representing pieces on the board).
+    The theme with the highest average score wins.
     """
     global _theme_auto_detected, _all_theme_templates
     
     board_h, board_w = board_img.shape[:2]
     sq_w, sq_h = board_w // 8, board_h // 8
     
-    # Sample squares from known-occupied positions in a starting position
-    # Rows 0,1 (black pieces) and rows 6,7 (white pieces) are most likely occupied
-    sample_positions = [
-        (0, 0), (0, 4), (0, 7),  # Top row (likely black pieces)
-        (1, 2), (1, 5),          # Second row (likely black pawns)
-        (6, 1), (6, 6),          # Seventh row (likely white pawns)
-        (7, 0), (7, 4), (7, 7),  # Bottom row (likely white pieces)
-    ]
-    
-    # Extract and prepare sample squares
+    # Extract and prepare all 64 squares
     sample_squares = []
-    for row, col in sample_positions:
-        sq = board_img[row*sq_h:(row+1)*sq_h, col*sq_w:(col+1)*sq_w]
-        sq_small = cv2.resize(sq, (_FAST_SIZE, _FAST_SIZE))
-        neutral = _neutralize_background_fast(sq_small)
-        gray_sq = cv2.cvtColor(neutral, cv2.COLOR_BGR2GRAY)
-        sample_squares.append(gray_sq)
+    for row in range(8):
+        for col in range(8):
+            sq = board_img[row*sq_h:(row+1)*sq_h, col*sq_w:(col+1)*sq_w]
+            sq_small = cv2.resize(sq, (_FAST_SIZE, _FAST_SIZE))
+            neutral = _neutralize_background_fast(sq_small)
+            gray_sq = cv2.cvtColor(neutral, cv2.COLOR_BGR2GRAY)
+            sample_squares.append(gray_sq)
     
     best_theme = config.PIECE_THEME  # Default fallback
     best_avg_conf = -1.0
@@ -195,8 +188,8 @@ def detect_best_theme(board_img: np.ndarray) -> str:
         if len(theme_tmpls) < 12:
             continue
         
-        # Score this theme against sample squares
-        total_conf = 0.0
+        # Get max score for each of the 64 squares
+        square_scores = []
         for gray_sq in sample_squares:
             best_score = -1.0
             for tmpl_gray in theme_tmpls.values():
@@ -204,12 +197,14 @@ def detect_best_theme(board_img: np.ndarray) -> str:
                 _, max_val, _, _ = cv2.minMaxLoc(res)
                 if max_val > best_score:
                     best_score = max_val
-            total_conf += best_score
+            square_scores.append(best_score)
         
-        avg_conf = total_conf / len(sample_squares)
+        # Average the top 12 highest-scoring squares
+        square_scores.sort(reverse=True)
+        top_12_avg = sum(square_scores[:12]) / 12.0
         
-        if avg_conf > best_avg_conf:
-            best_avg_conf = avg_conf
+        if top_12_avg > best_avg_conf:
+            best_avg_conf = top_12_avg
             best_theme = theme_name
     
     _theme_auto_detected = True
@@ -232,11 +227,24 @@ def is_theme_auto_detected() -> bool:
 
 
 def _neutralize_background_fast(square_bgr: np.ndarray) -> np.ndarray:
-    """Neutralize chess board background colors — operates on already-resized small square."""
-    hsv = cv2.cvtColor(square_bgr, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, np.array([15, 15, 100]), np.array([65, 230, 255]))
+    """Flawlessly neutralize ANY board color by dynamically sampling the 4 corners."""
+    h, w = square_bgr.shape[:2]
+    # Sample the 4 corners (pieces are centered, so corners are always background)
+    corners = [
+        square_bgr[0:4, 0:4],
+        square_bgr[0:4, w-4:w],
+        square_bgr[h-4:h, 0:4],
+        square_bgr[h-4:h, w-4:w]
+    ]
+    # Calculate the median background color
+    bg_color = np.median(np.vstack(corners).reshape(-1, 3), axis=0)
+    
+    # Create a mask of pixels that are very close to the background color
+    diff = np.abs(square_bgr.astype(np.int32) - bg_color.astype(np.int32))
+    mask = np.max(diff, axis=2) < 30 # Threshold for similarity
+    
     res = square_bgr.copy()
-    res[mask > 0] = (128, 128, 128)
+    res[mask] = (128, 128, 128)
     return res
 
 
