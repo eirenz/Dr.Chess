@@ -22,13 +22,18 @@ _LOCK_THRESHOLD = 5          # Require 5 consecutive confident readings to lock
 # "auto"  = auto-detect via COM (legacy behavior)
 _user_color = "auto"
 
-# --- Performance: smaller template size for matching ---
-_FAST_SIZE = 64  # Downscaled template size (was 150 — 5.5x fewer pixels)
+# --- Performance constants ---
+_FAST_SIZE = 64  # Downscaled template size for fast per-frame piece detection
+_TMPL_SIZE = 56  # Template crop size (smaller than _FAST_SIZE to allow sliding)
 
-# Cached grayscale templates (built once)
-_gray_templates = {}
+_THEME_DETECT_SIZE = 128 # Higher resolution for one-time theme detection
+
+
+# Cached color templates (built once)
+_color_templates = {}
 _prev_square_hashes = None  # 64-element array of per-square pixel hashes for change detection
 _prev_grid_cache = None     # Last computed grid, reused for unchanged squares
+_cached_adaptive_threshold = None  # Calibrated per-frame threshold, recomputed on board change
 
 # --- Layer 4: Multi-theme state ---
 _all_theme_templates = {}   # {theme_name: {piece_code: gray_template_array}}
@@ -49,7 +54,7 @@ def load_templates(theme_name: str = None) -> dict:
     Returns:
         dict of full-size BGR templates for the specified theme.
     """
-    global _gray_templates, _active_theme_name
+    global _color_templates, _active_theme_name, _cached_adaptive_threshold
     
     if theme_name is None:
         theme_name = config.PIECE_THEME
@@ -87,26 +92,29 @@ def load_templates(theme_name: str = None) -> dict:
         else:
             templates[p] = img
     
-    # Pre-compute fast grayscale templates at reduced size
-    _gray_templates.clear()
+    # Pre-compute fast color templates at reduced size
+    # Center-crop to _TMPL_SIZE so matchTemplate can slide (vital for textured boards)
+    _color_templates.clear()
+    margin = (_FAST_SIZE - _TMPL_SIZE) // 2
     for p_code, tmpl in templates.items():
         t = tmpl[:, :, :3] if len(tmpl.shape) == 3 and tmpl.shape[2] >= 3 else tmpl
-        small = cv2.resize(t, (_FAST_SIZE, _FAST_SIZE))
-        if len(small.shape) == 3:
-            _gray_templates[p_code] = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-        else:
-            _gray_templates[p_code] = small
+        if len(t.shape) == 2:  # If grayscale, convert to BGR so it matches 3-channel board squares
+            t = cv2.cvtColor(t, cv2.COLOR_GRAY2BGR)
+        full = cv2.resize(t, (_FAST_SIZE, _FAST_SIZE))
+        cropped = full[margin:margin+_TMPL_SIZE, margin:margin+_TMPL_SIZE]
+        _color_templates[p_code] = cropped
     
+    _cached_adaptive_threshold = None  # Force recalibration on next build_fen call
     _active_theme_name = theme_name
     print(f"[FEN] Templates loaded for theme: {theme_name} ({len(templates)} pieces)")
     return templates
 
 
-def _load_theme_gray_templates(theme_name: str) -> dict:
-    """Load only fast grayscale templates for a theme (used during auto-detection).
+def _load_theme_color_templates_large(theme_name: str) -> dict:
+    """Load high-res color templates (112x112) for accurate theme detection.
     
     Returns:
-        dict of {piece_code: gray_64x64_array} or empty dict if theme not found.
+        dict of {piece_code: bgr_112x112_array} or empty dict if theme not found.
     """
     pieces = ["wk", "wq", "wr", "wb", "wn", "wp", "bk", "bq", "br", "bb", "bn", "bp"]
     theme_dir = os.path.join(config.PIECES_DIR, theme_name)
@@ -114,7 +122,7 @@ def _load_theme_gray_templates(theme_name: str) -> dict:
     if not os.path.isdir(theme_dir):
         return {}
     
-    gray_tmpls = {}
+    color_tmpls = {}
     for p in pieces:
         matched_path = None
         for f in os.listdir(theme_dir):
@@ -140,21 +148,28 @@ def _load_theme_gray_templates(theme_name: str) -> dict:
             img = gray_bg.astype(np.uint8)
         
         t = img[:, :, :3] if len(img.shape) == 3 and img.shape[2] >= 3 else img
-        small = cv2.resize(t, (_FAST_SIZE, _FAST_SIZE))
-        if len(small.shape) == 3:
-            gray_tmpls[p] = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-        else:
-            gray_tmpls[p] = small
+        if len(t.shape) == 2:
+            t = cv2.cvtColor(t, cv2.COLOR_GRAY2BGR)
+            
+        # Resize piece template to slightly smaller than the board square
+        tmpl_size = _THEME_DETECT_SIZE - 16  # 112x112
+        small = cv2.resize(t, (tmpl_size, tmpl_size))
+        
+        color_tmpls[p] = small
     
-    return gray_tmpls
+    return color_tmpls
 
 
 def detect_best_theme(board_img: np.ndarray) -> str:
     """
-    Flawlessly auto-detects the active piece theme by scanning all 64 squares.
-    Calculates the best match score for each square across all templates of a theme,
-    sorts the scores, and averages the top 12 squares (representing pieces on the board).
-    The theme with the highest average score wins.
+    Auto-detects the active piece theme using DISCRIMINABILITY scoring.
+    
+    Instead of raw top-12 average (which fails for visually similar themes like
+    classic/icy_sea or neo/alpha), we compute a relative score:
+        discriminability = theme_score - median_score_of_all_themes
+    
+    This means a theme only wins if it scores DISTINCTIVELY BETTER than competitors,
+    not just marginally higher. The theme with the highest discriminability wins.
     """
     global _theme_auto_detected, _all_theme_templates
     
@@ -166,53 +181,93 @@ def detect_best_theme(board_img: np.ndarray) -> str:
     for row in range(8):
         for col in range(8):
             sq = board_img[row*sq_h:(row+1)*sq_h, col*sq_w:(col+1)*sq_w]
-            sq_small = cv2.resize(sq, (_FAST_SIZE, _FAST_SIZE))
+            sq_small = cv2.resize(sq, (_THEME_DETECT_SIZE, _THEME_DETECT_SIZE))
             neutral = _neutralize_background_fast(sq_small)
-            gray_sq = cv2.cvtColor(neutral, cv2.COLOR_BGR2GRAY)
-            sample_squares.append(gray_sq)
+            sample_squares.append(neutral)
     
-    best_theme = config.PIECE_THEME  # Default fallback
-    best_avg_conf = -1.0
+    # Step 1: Compute top-12 average score for EVERY theme
+    theme_raw_scores = {}  # theme_name -> top12_avg
     
-    # Test each available theme
     for theme_name in config.AVAILABLE_THEMES:
         theme_dir = os.path.join(config.PIECES_DIR, theme_name)
         if not os.path.isdir(theme_dir):
             continue
         
-        # Load gray templates for this theme
+        # Load large color templates for this theme
         if theme_name not in _all_theme_templates:
-            _all_theme_templates[theme_name] = _load_theme_gray_templates(theme_name)
+            _all_theme_templates[theme_name] = _load_theme_color_templates_large(theme_name)
         
         theme_tmpls = _all_theme_templates[theme_name]
         if len(theme_tmpls) < 12:
             continue
         
-        # Get max score for each of the 64 squares
         square_scores = []
-        for gray_sq in sample_squares:
+        for color_sq in sample_squares:
             best_score = -1.0
-            for tmpl_gray in theme_tmpls.values():
-                res = cv2.matchTemplate(gray_sq, tmpl_gray, cv2.TM_CCOEFF_NORMED)
+            for tmpl_color in theme_tmpls.values():
+                res = cv2.matchTemplate(color_sq, tmpl_color, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, _ = cv2.minMaxLoc(res)
                 if max_val > best_score:
                     best_score = max_val
             square_scores.append(best_score)
         
-        # Average the top 12 highest-scoring squares
         square_scores.sort(reverse=True)
         top_12_avg = sum(square_scores[:12]) / 12.0
+        theme_raw_scores[theme_name] = top_12_avg
+    
+    if not theme_raw_scores:
+        _theme_auto_detected = True
+        _all_theme_templates.clear()
+        print(f"[FEN] Theme auto-detected: {config.PIECE_THEME} (fallback — no themes scored)")
+        return config.PIECE_THEME
+    
+    # Step 2: Sort themes by raw score
+    sorted_themes = sorted(theme_raw_scores.items(), key=lambda x: x[1], reverse=True)
+    best_theme, best_raw = sorted_themes[0]
+    
+    # Step 3: Color MSE Tiebreaker
+    # TM_CCOEFF_NORMED ignores absolute color. If multiple themes have nearly identical
+    # shapes (score within 0.03 of the winner), we use color MSE to break the tie.
+    tie_candidates = [t for t, s in sorted_themes if best_raw - s < 0.03]
+    
+    if len(tie_candidates) > 1:
+        # We need the color squares (not neutralized) to check absolute color,
+        # but the background throws it off. We use the template's non-gray mask.
+        best_mse = float('inf')
+        for candidate in tie_candidates:
+            tmpls = _all_theme_templates[candidate]
+            candidate_mse_list = []
+            for color_sq in sample_squares:
+                # Find the best template for this square using raw shape score
+                best_t_score = -1
+                best_t = None
+                for t in tmpls.values():
+                    res = cv2.matchTemplate(color_sq, t, cv2.TM_CCOEFF_NORMED)
+                    _, mx, _, _ = cv2.minMaxLoc(res)
+                    if mx > best_t_score:
+                        best_t_score = mx
+                        best_t = t
+                
+                if best_t is not None:
+                    # Compute color MSE only on piece pixels (where template is not exactly 128 gray)
+                    diff = np.abs(best_t.astype(np.int32) - 128)
+                    mask = np.max(diff, axis=2) > 10
+                    if np.any(mask):
+                        mse = np.mean((color_sq[mask].astype(np.float32) - best_t[mask].astype(np.float32))**2)
+                        candidate_mse_list.append(mse)
+            
+            if candidate_mse_list:
+                avg_mse = sum(sorted(candidate_mse_list)[:12]) / 12.0
+                if avg_mse < best_mse:
+                    best_mse = avg_mse
+                    best_theme = candidate
+                    
+        print(f"[FEN] Theme auto-detected: {best_theme} (resolved tiebreak among {len(tie_candidates)} candidates)")
+    else:
+        print(f"[FEN] Theme auto-detected: {best_theme} (raw={best_raw:.3f}, clear winner)")
         
-        if top_12_avg > best_avg_conf:
-            best_avg_conf = top_12_avg
-            best_theme = theme_name
-    
     _theme_auto_detected = True
-    
-    # Clear cached theme templates to free memory (we only need the winner)
     _all_theme_templates.clear()
-    
-    print(f"[FEN] Theme auto-detected: {best_theme} (confidence: {best_avg_conf:.3f})")
     return best_theme
 
 
@@ -227,24 +282,37 @@ def is_theme_auto_detected() -> bool:
 
 
 def _neutralize_background_fast(square_bgr: np.ndarray) -> np.ndarray:
-    """Flawlessly neutralize ANY board color by dynamically sampling the 4 corners."""
+    """Neutralize board background using hybrid HSV + corner-sampling approach.
+    
+    Uses two complementary masking strategies:
+    - HSV hue-based mask: catches brown/tan/green textured boards (walnut, wood, etc.)
+    - Corner-sampling mask: catches flat-colored boards of any color
+    The union of both masks ensures maximum background coverage.
+    """
     h, w = square_bgr.shape[:2]
-    # Sample the 4 corners (pieces are centered, so corners are always background)
+    
+    # --- Method 1: HSV hue-based masking (original algorithm) ---
+    # Catches brown/tan/olive/green hues (H=10-85) covering walnut, wood, green, and
+    # the warm ivory/beige tones baked into 3D piece renderings.
+    hsv = cv2.cvtColor(square_bgr, cv2.COLOR_BGR2HSV)
+    mask_hsv = cv2.inRange(hsv, np.array([10, 5, 60]), np.array([85, 240, 255]))
+    
+    # --- Method 2: Corner-sampling (catches any flat-colored board) ---
     corners = [
         square_bgr[0:4, 0:4],
         square_bgr[0:4, w-4:w],
         square_bgr[h-4:h, 0:4],
         square_bgr[h-4:h, w-4:w]
     ]
-    # Calculate the median background color
     bg_color = np.median(np.vstack(corners).reshape(-1, 3), axis=0)
-    
-    # Create a mask of pixels that are very close to the background color
     diff = np.abs(square_bgr.astype(np.int32) - bg_color.astype(np.int32))
-    mask = np.max(diff, axis=2) < 30 # Threshold for similarity
+    mask_corner = np.max(diff, axis=2) < 40
+    
+    # --- Union of both masks ---
+    combined_mask = (mask_hsv > 0) | mask_corner
     
     res = square_bgr.copy()
-    res[mask] = (128, 128, 128)
+    res[combined_mask] = (128, 128, 128)
     return res
 
 
@@ -536,13 +604,40 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
     - Layer 3: 2-ply matching (recovers from missed frames)
     - Turn inference: Grid-diff analysis + parity enforcement
     """
-    global _prev_square_hashes, _prev_grid_cache, _last_emitted_turn, _last_emitted_placement
+    global _prev_square_hashes, _prev_grid_cache, _last_emitted_turn, _last_emitted_placement, _cached_adaptive_threshold
     
     board_h, board_w = board_img.shape[:2]
     sq_w, sq_h = board_w // 8, board_h // 8
     
     current_grid = []
     new_hashes = []
+    
+    # --- Adaptive threshold calibration ---
+    # Only recompute when the board hasn't been seen before (first frame, or after a template reload).
+    # In subsequent frames the hash-cache means most squares are skipped anyway, and the
+    # board rendering characteristics don't change between frames.
+    if _cached_adaptive_threshold is None or _prev_square_hashes is None:
+        all_sample_scores = []
+        for row in range(8):
+            for col in range(8):
+                sq_raw = board_img[row*sq_h:(row+1)*sq_h, col*sq_w:(col+1)*sq_w]
+                sq_small = cv2.resize(sq_raw, (_FAST_SIZE, _FAST_SIZE))
+                neutral = _neutralize_background_fast(sq_small)
+                best = -1.0
+                for tmpl_color in _color_templates.values():
+                    res = cv2.matchTemplate(neutral, tmpl_color, cv2.TM_CCOEFF_NORMED)
+                    _, mx, _, _ = cv2.minMaxLoc(res)
+                    if mx > best:
+                        best = mx
+                all_sample_scores.append(best)
+        # Set threshold at 40th-percentile of all square scores.
+        # With 32 pieces + 32 empty squares the 40th percentile (~25th score)
+        # sits right in the piece/empty transition zone.
+        sorted_scores = sorted(all_sample_scores, reverse=True)
+        p40_score = sorted_scores[int(len(sorted_scores) * 0.40)]
+        _cached_adaptive_threshold = float(np.clip(p40_score * 0.85, 0.20, 0.60))
+    
+    adaptive_threshold = _cached_adaptive_threshold
     
     for row in range(8):
         for col in range(8):
@@ -561,17 +656,16 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
                 current_grid.append(_prev_grid_cache[idx])
                 continue
             
-            # --- Resize to fast size, neutralize, convert to grayscale ---
+            # --- Resize to fast size, neutralize ---
             square_small = cv2.resize(square_raw, (_FAST_SIZE, _FAST_SIZE))
             neutral = _neutralize_background_fast(square_small)
-            gray_sq = cv2.cvtColor(neutral, cv2.COLOR_BGR2GRAY)
             
             best_score = -1
             second_score = -1
             best_piece_candidate = '.'
             
-            for p_code, tmpl_gray in _gray_templates.items():
-                res = cv2.matchTemplate(gray_sq, tmpl_gray, cv2.TM_CCOEFF_NORMED)
+            for p_code, tmpl_color in _color_templates.items():
+                res = cv2.matchTemplate(neutral, tmpl_color, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, _ = cv2.minMaxLoc(res)
                 if max_val > best_score:
                     second_score = best_score
@@ -582,10 +676,10 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
             
             gap = best_score - second_score
             is_piece = False
-            if best_score >= 0.75:
-                is_piece = True  # Very high confidence
-            elif best_score >= 0.60 and gap >= 0.08:
-                is_piece = True  # Moderate confidence but clear winner
+            if best_score >= adaptive_threshold:
+                is_piece = True  # Above calibrated threshold for this board/theme
+            elif best_score >= adaptive_threshold * 0.75 and gap >= 0.04:
+                is_piece = True  # Just below threshold but clear winner (no other close candidate)
                 
             if is_piece:
                 current_grid.append(best_piece_candidate)
@@ -633,10 +727,15 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
     placement = "/".join(placement_rows)
     
     # --- Layer 2: Validate FEN plausibility ---
+    # We relax validation for the VERY FIRST frame (prev_fen is None) so the overlay 
+    # can at least lock onto the board and wrap it, even if the user's piece theme 
+    # is highly unusual/3D and causes some pieces (like kings) to be misclassified.
     is_valid, validation_reason = validate_fen_plausibility(placement)
-    if not is_valid:
+    if not is_valid and prev_fen is not None:
         print(f"[FEN] Validation FAILED: {validation_reason} | Orient: {orientation_source} | Pieces: {piece_count}")
         return None, current_grid, is_flipped, prev_active_fallback, orientation_source, piece_count, False
+    elif not is_valid and prev_fen is None:
+        print(f"[FEN] Validation WARNING (Initial Sync): {validation_reason} | Proceeding anyway to allow board wrap.")
     
     matched_legal_move = False
     new_active_color = prev_active_fallback
