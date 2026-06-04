@@ -241,19 +241,25 @@ def detect_best_theme(board_img: np.ndarray) -> str:
                 # Find the best template for this square using raw shape score
                 best_t_score = -1
                 best_t = None
+                best_loc = None
                 for t in tmpls.values():
                     res = cv2.matchTemplate(color_sq, t, cv2.TM_CCOEFF_NORMED)
-                    _, mx, _, _ = cv2.minMaxLoc(res)
+                    _, mx, _, mx_loc = cv2.minMaxLoc(res)
                     if mx > best_t_score:
                         best_t_score = mx
                         best_t = t
+                        best_loc = mx_loc
                 
-                if best_t is not None:
+                if best_t is not None and best_loc is not None:
+                    x, y = best_loc
+                    th, tw = best_t.shape[:2]
+                    sq_crop = color_sq[y:y+th, x:x+tw]
+                    
                     # Compute color MSE only on piece pixels (where template is not exactly 128 gray)
                     diff = np.abs(best_t.astype(np.int32) - 128)
                     mask = np.max(diff, axis=2) > 10
                     if np.any(mask):
-                        mse = np.mean((color_sq[mask].astype(np.float32) - best_t[mask].astype(np.float32))**2)
+                        mse = np.mean((sq_crop[mask].astype(np.float32) - best_t[mask].astype(np.float32))**2)
                         candidate_mse_list.append(mse)
             
             if candidate_mse_list:
