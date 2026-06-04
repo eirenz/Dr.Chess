@@ -197,6 +197,9 @@ def run_evaluation(dataset_dir, verbose=False):
         
         for pf in piece_files:
             pt = os.path.splitext(pf)[0]  # piece theme name from filename
+            if "3d" in pt:
+                continue
+            
             img_path = os.path.join(board_dir, pf)
             processed += 1
             

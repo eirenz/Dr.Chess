@@ -222,13 +222,14 @@ def detect_best_theme(board_img: np.ndarray) -> str:
         return config.PIECE_THEME
     
     # Step 2: Sort themes by raw score
-    sorted_themes = sorted(theme_raw_scores.items(), key=lambda x: x[1], reverse=True)
-    best_theme, best_raw = sorted_themes[0]
+    theme_scores = list(theme_raw_scores.items())
+    theme_scores.sort(key=lambda x: x[1], reverse=True)
+    best_theme, best_raw = theme_scores[0]
     
     # Step 3: Color MSE Tiebreaker
     # TM_CCOEFF_NORMED ignores absolute color. If multiple themes have nearly identical
     # shapes (score within 0.03 of the winner), we use color MSE to break the tie.
-    tie_candidates = [t for t, s in sorted_themes if best_raw - s < 0.03]
+    tie_candidates = [t for t, s in theme_scores if best_raw - s < 0.03]
     
     if len(tie_candidates) > 1:
         # We need the color squares (not neutralized) to check absolute color,
@@ -303,14 +304,18 @@ def _neutralize_background_fast(square_bgr: np.ndarray) -> np.ndarray:
     hsv = cv2.cvtColor(square_bgr, cv2.COLOR_BGR2HSV)
     mask_hsv = cv2.inRange(hsv, np.array([10, 5, 60]), np.array([85, 240, 255]))
     
-    # --- Method 2: Corner-sampling (catches any flat-colored board) ---
-    corners = [
-        square_bgr[0:4, 0:4],
-        square_bgr[0:4, w-4:w],
-        square_bgr[h-4:h, 0:4],
-        square_bgr[h-4:h, w-4:w]
-    ]
-    bg_color = np.median(np.vstack(corners).reshape(-1, 3), axis=0)
+    # --- Method 2: Inset-Ring sampling (catches any flat-colored board and bypasses gridlines) ---
+    # Sample a 4-pixel thick hollow ring, inset by 12% from the edge.
+    # This avoids gridlines on the outer edge, and avoids the piece in the center.
+    inset_y = max(4, int(h * 0.12))
+    inset_x = max(4, int(w * 0.12))
+    ring_pixels = np.concatenate([
+        square_bgr[inset_y:inset_y+4, inset_x:w-inset_x].reshape(-1, 3),        # Top edge of ring
+        square_bgr[h-inset_y-4:h-inset_y, inset_x:w-inset_x].reshape(-1, 3),    # Bottom edge of ring
+        square_bgr[inset_y:h-inset_y, inset_x:inset_x+4].reshape(-1, 3),        # Left edge of ring
+        square_bgr[inset_y:h-inset_y, w-inset_x-4:w-inset_x].reshape(-1, 3)     # Right edge of ring
+    ])
+    bg_color = np.median(ring_pixels, axis=0)
     diff = np.abs(square_bgr.astype(np.int32) - bg_color.astype(np.int32))
     mask_corner = np.max(diff, axis=2) < 40
     
