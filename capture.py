@@ -131,7 +131,25 @@ def get_board_region(screen_img: np.ndarray) -> tuple | None:
         return (gx, gy, cw, ch)
     
     gray = cv2.cvtColor(screen_img, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150)
+    
+    # --- Performance: Localized detection if we have a cached rect ---
+    search_offset_x = 0
+    search_offset_y = 0
+    
+    if cached_board_rect is not None:
+        cx, cy, cw, ch = cached_board_rect
+        margin = 50
+        x1 = max(0, cx - margin)
+        y1 = max(0, cy - margin)
+        x2 = min(gray.shape[1], cx + cw + margin)
+        y2 = min(gray.shape[0], cy + ch + margin)
+        gray_roi = gray[y1:y2, x1:x2]
+        search_offset_x = x1
+        search_offset_y = y1
+    else:
+        gray_roi = gray
+        
+    edges = cv2.Canny(gray_roi, 50, 150)
     contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     
     best_rect = None
@@ -148,9 +166,15 @@ def get_board_region(screen_img: np.ndarray) -> tuple | None:
                     max_area = area
                     
     if best_rect is None:
+        if cached_board_rect is not None:
+            # Fallback to full screen search if localized search fails (e.g. window moved aggressively)
+            cached_board_rect = None
+            return get_board_region(screen_img)
         return None
         
     x, y, w, h = best_rect
+    x += search_offset_x
+    y += search_offset_y
     
     # Dynamically crop out coordinate margins via column/row pixel variance
     x, y, w, h = refine_board((x, y, w, h), screen_img)
@@ -166,6 +190,23 @@ def get_board_region(screen_img: np.ndarray) -> tuple | None:
             cached_board_rect = (x, y, w, h)
     else:
         cached_board_rect = (x, y, w, h)
+
+    # Enforce strict 1:1 aspect ratio to strip out any attached evaluation bars
+    # Chess.com eval bar is typically attached to the left of the board.
+    if w > h + 5:
+        # Wider than tall: eval bar is likely on the left
+        diff = w - h
+        x += diff
+        w = h
+    elif h > w + 5:
+        # Taller than wide: trim from the bottom/top (rare)
+        diff = h - w
+        y += diff // 2
+        h = w
+    
+    # Absolute square guarantee
+    w = min(w, h)
+    h = w
 
     # Translate local capture coords to global screen coords (multi-monitor)
     gx = _browser_offset[0] + x

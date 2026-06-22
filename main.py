@@ -143,6 +143,8 @@ def capture_thread_func():
         if not matched and confirmed_fen:
             unmatched_frames_count += 1
             if unmatched_frames_count < 5:
+                # Frame changed but doesn't match legal move (likely mid-animation).
+                # Drop frame and let loop naturally fetch the next frame at target FPS.
                 continue
             else:
                 print("5 consecutive unmatched frames. Resyncing board state visually!")
@@ -152,9 +154,8 @@ def capture_thread_func():
             unmatched_frames_count = 0
             forced_resync = False
         
-        # --- FAST PATH: If the first capture already matched a legal move, accept immediately ---
-        if matched and not forced_resync:
-            # Clean, legal-move-validated capture — no need to wait for animation
+        # --- Accept FEN if it matched a legal move, or if forced resync, or if initial board ---
+        if matched or forced_resync or not confirmed_fen:
             now = time.time()
             fps = 1.0 / max(0.001, now - last_capture_time)
             last_capture_time = now
@@ -179,67 +180,6 @@ def capture_thread_func():
             confirmed_fen = fen_str
             confirmed_grid = current_grid
             confirmed_active_color = returned_active
-            continue
-        
-        # --- SLOW PATH: Ambiguous change — wait for animation to settle, then re-capture ---
-        time.sleep(config.MOVE_ANIM_DELAY_MS / 1000.0)
-        
-        try:
-            screen_img2 = capture.capture_screen()
-            board_rect2 = capture.get_board_region(screen_img2)
-        except Exception:
-            continue
-        
-        if board_rect2 is None:
-            continue
-        
-        local_rect2 = capture.get_local_board_rect(screen_img2, board_rect2)
-        if local_rect2 is None:
-            continue
-        lx2, ly2, lw2, lh2 = local_rect2
-        board_img2 = screen_img2[ly2:ly2+lh2, lx2:lx2+lw2]
-        
-        if board_img2.size == 0:
-            continue
-        
-        try:
-            fen_str, current_grid, is_flipped, returned_active, orient_source, piece_count, matched2 = fen_builder.build_fen(
-                board_img2, templates, confirmed_fen, confirmed_active_color, confirmed_grid
-            )
-        except Exception as e:
-            print(f"FEN re-build error: {e}")
-            continue
-        
-        if fen_str is None or fen_str == confirmed_fen:
-            continue
-            
-        if not matched2 and not forced_resync and confirmed_fen:
-            continue
-        
-        now = time.time()
-        fps = 1.0 / max(0.001, now - last_capture_time)
-        last_capture_time = now
-        
-        while not fen_queue.empty():
-            try: fen_queue.get_nowait()
-            except: pass
-            
-        fen_queue.put({
-            "fen": fen_str,
-            "is_flipped": is_flipped,
-            "board_rect": board_rect2,
-            "debug": {
-                "fps": fps,
-                "confidence": piece_count,
-                "orientation_source": orient_source,
-                "active_turn": returned_active,
-                "last_error": "None",
-            }
-        })
-        
-        confirmed_fen = fen_str
-        confirmed_grid = current_grid
-        confirmed_active_color = returned_active
 
 def analysis_thread_func(analyzer):
     while True:

@@ -5,3 +5,32 @@ venv/
 env/
 .DS_Store
 crash_log.txt
+launch_error.txt
+
+# Debug & scratch images
+debug_*.png
+debug_*.jpg
+failed_frame.png
+king_sq.png
+mock_*.png
+mate_*.png
+mate_seq_*.png
+premove_*.png
+test_dynboard_output.png
+test_user_board.png
+user_test_image.png
+sweep_results.json
+mate_fens.txt
+
+# Test/diagnostic scripts (not part of core product)
+test_*.py
+check_*.py
+evaluate_detector.py
+diagnose_failures.py
+generate_dataset.py
+
+# Dataset and scratch directories
+dataset/
+boards/
+dynboard_probe/
+

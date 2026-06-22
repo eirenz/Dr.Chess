@@ -34,11 +34,16 @@ class Analyzer:
 
     def start_engine(self):
         if not self.engine:
-            self.engine = chess.engine.SimpleEngine.popen_uci(config.STOCKFISH_PATH)
-            try:
-                self.engine.configure({"Hash": 128, "Threads": 2})
-            except Exception:
-                pass
+            import time
+            for attempt in range(3):
+                try:
+                    self.engine = chess.engine.SimpleEngine.popen_uci(config.STOCKFISH_PATH)
+                    self.engine.configure({"Hash": 128, "Threads": 2})
+                    break
+                except Exception as e:
+                    print(f"Failed to start Stockfish (attempt {attempt+1}): {e}")
+                    self.engine = None
+                    time.sleep(0.5)
 
     def stop_engine(self):
         if self.engine:

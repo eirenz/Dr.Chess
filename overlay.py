@@ -258,7 +258,9 @@ class ChessOverlay(QMainWindow):
             
             h = self.height()
             score = res.best_cp
-            factor = score / 2000.0
+            # Bottom player's advantage pushes the boundary UP
+            adv = -score if self.is_flipped else score
+            factor = adv / 2000.0
             target = int(h * (0.5 - factor))
             target = max(5, min(h - 5, target))
             
@@ -338,15 +340,32 @@ class ChessOverlay(QMainWindow):
         bar_w = 20
         
         # --- Eval bar ---
-        painter.fillRect(0, 0, bar_w, h, QColor("#2b2b2b"))
-        painter.fillRect(0, int(self.split_val), bar_w, h - int(self.split_val), QColor("#ffffff"))
+        top_color = QColor("#ffffff") if self.is_flipped else QColor("#2b2b2b")
+        bottom_color = QColor("#2b2b2b") if self.is_flipped else QColor("#ffffff")
         
-        painter.setPen(QPen(QColor("#000000") if self.split_val < h/2 else QColor("#ffffff")))
+        painter.fillRect(0, 0, bar_w, int(self.split_val), top_color)
+        painter.fillRect(0, int(self.split_val), bar_w, h - int(self.split_val), bottom_color)
+        
+        is_bottom_larger = self.split_val < (h / 2.0)
+        
+        if is_bottom_larger:
+            text_bg = bottom_color
+            text_y = int(self.split_val) + 2
+        else:
+            text_bg = top_color
+            text_y = int(self.split_val) - 22
+            
+        # Keep text clamped to screen
+        text_y = max(2, min(h - 22, text_y))
+        
+        text_color = QColor("#000000") if text_bg == QColor("#ffffff") else QColor("#ffffff")
+        
+        painter.setPen(QPen(text_color))
         font = painter.font()
         font.setPixelSize(11)
         font.setBold(True)
         painter.setFont(font)
-        painter.drawText(0, int(self.split_val - 10), bar_w, 20, Qt.AlignmentFlag.AlignCenter, self.cp_text)
+        painter.drawText(0, text_y, bar_w, 20, Qt.AlignmentFlag.AlignCenter, self.cp_text)
         
         # --- Modern Comet Arrows ---
         sq = (w - bar_w) // 8

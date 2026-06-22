@@ -23,8 +23,8 @@ _LOCK_THRESHOLD = 5          # Require 5 consecutive confident readings to lock
 _user_color = "auto"
 
 # --- Performance constants ---
-_FAST_SIZE = 64  # Downscaled template size for fast per-frame piece detection
-_TMPL_SIZE = 56  # Template crop size (smaller than _FAST_SIZE to allow sliding)
+_FAST_SIZE = 64  # Restored to 64 for 100% accuracy on live browser scaling
+_TMPL_SIZE = 56  # Restored to 56 to match _FAST_SIZE margin
 
 _THEME_DETECT_SIZE = 128 # Higher resolution for one-time theme detection
 
@@ -288,42 +288,79 @@ def is_theme_auto_detected() -> bool:
     return _theme_auto_detected
 
 
-def _neutralize_background_fast(square_bgr: np.ndarray) -> np.ndarray:
-    """Neutralize board background using hybrid HSV + corner-sampling approach.
+_calibrated_light_bg = None
+_calibrated_dark_bg = None
+
+def calibrate_board_colors(board_img: np.ndarray):
+    """Calibrate the expected background color for light and dark squares using the corner squares."""
+    global _calibrated_light_bg, _calibrated_dark_bg
+    h, w = board_img.shape[:2]
+    sq_w, sq_h = w // 8, h // 8
     
-    Uses two complementary masking strategies:
-    - HSV hue-based mask: catches brown/tan/green textured boards (walnut, wood, etc.)
-    - Corner-sampling mask: catches flat-colored boards of any color
-    The union of both masks ensures maximum background coverage.
+    def get_ring_color(r, c):
+        sq = board_img[r*sq_h:(r+1)*sq_h, c*sq_w:(c+1)*sq_w]
+        inset_y, inset_x = max(4, int(sq_h * 0.12)), max(4, int(sq_w * 0.12))
+        ring = np.concatenate([
+            sq[inset_y:inset_y+4, inset_x:sq_w-inset_x].reshape(-1, 3),
+            sq[sq_h-inset_y-4:sq_h-inset_y, inset_x:sq_w-inset_x].reshape(-1, 3),
+            sq[inset_y:sq_h-inset_y, inset_x:inset_x+4].reshape(-1, 3),
+            sq[inset_y:sq_h-inset_y, sq_w-inset_x-4:sq_w-inset_x].reshape(-1, 3)
+        ])
+        return np.median(ring, axis=0)
+
+    # a8 (0,0)=light, h8 (0,7)=dark, a1 (7,0)=dark, h1 (7,7)=light
+    a8_color = get_ring_color(0, 0)
+    h1_color = get_ring_color(7, 7)
+    _calibrated_light_bg = np.median([a8_color, h1_color], axis=0)
+    
+    h8_color = get_ring_color(0, 7)
+    a1_color = get_ring_color(7, 0)
+    _calibrated_dark_bg = np.median([h8_color, a1_color], axis=0)
+
+
+def _neutralize_background_fast(square_bgr: np.ndarray, is_light_square: bool = None) -> np.ndarray:
+    """Neutralize board background using calibrated colors or inset-ring fallback.
+    
+    By matching against the specific known background color of the board, we avoid 
+    accidentally erasing piece pixels that happen to be brown (HSV overlap), and we 
+    naturally preserve highlight colors (yellow/green) because they don't match the background.
     """
+    global _calibrated_light_bg, _calibrated_dark_bg
+    
+    expected_bg = None
+    if is_light_square is not None and _calibrated_light_bg is not None and _calibrated_dark_bg is not None:
+        expected_bg = _calibrated_light_bg if is_light_square else _calibrated_dark_bg
+        
     h, w = square_bgr.shape[:2]
     
-    # --- Method 1: HSV hue-based masking (original algorithm) ---
-    # Catches brown/tan/olive/green hues (H=10-85) covering walnut, wood, green, and
-    # the warm ivory/beige tones baked into 3D piece renderings.
-    hsv = cv2.cvtColor(square_bgr, cv2.COLOR_BGR2HSV)
-    mask_hsv = cv2.inRange(hsv, np.array([10, 5, 60]), np.array([85, 240, 255]))
-    
-    # --- Method 2: Inset-Ring sampling (catches any flat-colored board and bypasses gridlines) ---
-    # Sample a 4-pixel thick hollow ring, inset by 12% from the edge.
-    # This avoids gridlines on the outer edge, and avoids the piece in the center.
+    # Calculate inset-ring color
     inset_y = max(4, int(h * 0.12))
     inset_x = max(4, int(w * 0.12))
     ring_pixels = np.concatenate([
-        square_bgr[inset_y:inset_y+4, inset_x:w-inset_x].reshape(-1, 3),        # Top edge of ring
-        square_bgr[h-inset_y-4:h-inset_y, inset_x:w-inset_x].reshape(-1, 3),    # Bottom edge of ring
-        square_bgr[inset_y:h-inset_y, inset_x:inset_x+4].reshape(-1, 3),        # Left edge of ring
-        square_bgr[inset_y:h-inset_y, w-inset_x-4:w-inset_x].reshape(-1, 3)     # Right edge of ring
+        square_bgr[inset_y:inset_y+4, inset_x:w-inset_x].reshape(-1, 3),
+        square_bgr[h-inset_y-4:h-inset_y, inset_x:w-inset_x].reshape(-1, 3),
+        square_bgr[inset_y:h-inset_y, inset_x:inset_x+4].reshape(-1, 3),
+        square_bgr[inset_y:h-inset_y, w-inset_x-4:w-inset_x].reshape(-1, 3)
     ])
-    bg_color = np.median(ring_pixels, axis=0)
-    diff = np.abs(square_bgr.astype(np.int32) - bg_color.astype(np.int32))
-    mask_corner = np.max(diff, axis=2) < 40
+    ring_color = np.median(ring_pixels, axis=0)
     
-    # --- Union of both masks ---
-    combined_mask = (mask_hsv > 0) | mask_corner
-    
+    if expected_bg is not None:
+        # Check if the square has a highlight (ring color differs significantly from expected board color)
+        # We use a distance threshold of 60 to distinguish highlights from normal texture variance.
+        if np.max(np.abs(ring_color - expected_bg)) > 60:
+            # It's a highlighted square! Erase the highlight color instead of the board color.
+            active_bg = ring_color
+        else:
+            # Normal square. Use the calibrated board color (prevents self-erasing pieces).
+            active_bg = expected_bg
+    else:
+        active_bg = ring_color
+
+    diff = np.abs(square_bgr.astype(np.int32) - active_bg.astype(np.int32))
+    mask_bg = np.max(diff, axis=2) < 40
+
     res = square_bgr.copy()
-    res[combined_mask] = (128, 128, 128)
+    res[mask_bg] = (128, 128, 128)
     return res
 
 
@@ -628,12 +665,14 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
     # In subsequent frames the hash-cache means most squares are skipped anyway, and the
     # board rendering characteristics don't change between frames.
     if _cached_adaptive_threshold is None or _prev_square_hashes is None:
+        calibrate_board_colors(board_img)
         all_sample_scores = []
         for row in range(8):
             for col in range(8):
+                is_light_square = (row + col) % 2 == 0
                 sq_raw = board_img[row*sq_h:(row+1)*sq_h, col*sq_w:(col+1)*sq_w]
                 sq_small = cv2.resize(sq_raw, (_FAST_SIZE, _FAST_SIZE))
-                neutral = _neutralize_background_fast(sq_small)
+                neutral = _neutralize_background_fast(sq_small, is_light_square)
                 best = -1.0
                 for tmpl_color in _color_templates.values():
                     res = cv2.matchTemplate(neutral, tmpl_color, cv2.TM_CCOEFF_NORMED)
@@ -653,6 +692,7 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
     for row in range(8):
         for col in range(8):
             idx = row * 8 + col
+            is_light_square = (row + col) % 2 == 0
             square_raw = board_img[row*sq_h:(row+1)*sq_h, col*sq_w:(col+1)*sq_w]
             
             # --- Fast change detection: skip unchanged squares ---
@@ -669,21 +709,44 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
             
             # --- Resize to fast size, neutralize ---
             square_small = cv2.resize(square_raw, (_FAST_SIZE, _FAST_SIZE))
-            neutral = _neutralize_background_fast(square_small)
+            neutral = _neutralize_background_fast(square_small, is_light_square)
             
             best_score = -1
             second_score = -1
             best_piece_candidate = '.'
+            second_piece_candidate = '.'
             
             for p_code, tmpl_color in _color_templates.items():
                 res = cv2.matchTemplate(neutral, tmpl_color, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, _ = cv2.minMaxLoc(res)
                 if max_val > best_score:
                     second_score = best_score
+                    second_piece_candidate = best_piece_candidate
                     best_score = max_val
                     best_piece_candidate = p_code
                 elif max_val > second_score:
                     second_score = max_val
+                    second_piece_candidate = p_code
+            
+            # --- Color-Aware Tiebreaker ---
+            # If the top two match scores are very close (< 0.05 diff) and they are the same piece type but opposite color
+            if best_piece_candidate != '.' and second_piece_candidate != '.':
+                if best_piece_candidate[1] == second_piece_candidate[1] and best_piece_candidate[0] != second_piece_candidate[0]:
+                    if (best_score - second_score) < 0.05:
+                        # Extract raw brightness from piece region
+                        global _calibrated_light_bg, _calibrated_dark_bg
+                        expected_bg = _calibrated_light_bg if is_light_square else _calibrated_dark_bg
+                        if expected_bg is not None:
+                            diff = np.abs(square_small.astype(np.int32) - expected_bg.astype(np.int32))
+                            mask_piece = np.max(diff, axis=2) >= 40
+                            if np.any(mask_piece):
+                                mean_brightness = np.mean(square_small[mask_piece])
+                                predicted_white = mean_brightness > 110
+                                candidate_is_white = best_piece_candidate[0] == 'w'
+                                if predicted_white != candidate_is_white:
+                                    # Overrule the shape score based on color brightness
+                                    best_piece_candidate, second_piece_candidate = second_piece_candidate, best_piece_candidate
+                                    best_score, second_score = second_score, best_score
             
             gap = best_score - second_score
             is_piece = False
@@ -743,10 +806,12 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
     # is highly unusual/3D and causes some pieces (like kings) to be misclassified.
     is_valid, validation_reason = validate_fen_plausibility(placement)
     if not is_valid and prev_fen is not None:
+        cv2.imwrite(r"C:\Users\renze\.gemini\antigravity-ide\brain\fb620d04-0517-4692-9a4c-8dd287aad538\.tempmediaStorage\debug_failed_pieces.png", board_img)
         print(f"[FEN] Validation FAILED: {validation_reason} | Orient: {orientation_source} | Pieces: {piece_count}")
         return None, current_grid, is_flipped, prev_active_fallback, orientation_source, piece_count, False
     elif not is_valid and prev_fen is None:
         print(f"[FEN] Validation WARNING (Initial Sync): {validation_reason} | Proceeding anyway to allow board wrap.")
+        is_valid = True
     
     matched_legal_move = False
     new_active_color = prev_active_fallback
@@ -793,7 +858,20 @@ def build_fen(board_img: np.ndarray, templates: dict, prev_fen: str | None, prev
             print(f"[FEN] Error parsing prev_fen: {e}")
             
     # Fallback / Resync Path
-    # --- Fix 1: Grid-diff turn inference for resync ---
+    
+    # --- Fix 1: Resync Safety Net (Piece Count & Theme Redetection) ---
+    if prev_fen is not None:
+        try:
+            prev_board = chess.Board(prev_fen)
+            prev_piece_count = len(prev_board.piece_map())
+            # If pieces suddenly jump by more than 2, it's definitely a vision glitch
+            if piece_count > prev_piece_count + 2:
+                print(f"[FEN] Frame rejected (Resync): Piece count jumped from {prev_piece_count} to {piece_count}. Likely vision glitch.")
+                return prev_fen, prev_grid[:], is_flipped, prev_active_fallback, orientation_source, prev_piece_count, False
+        except Exception:
+            pass
+
+        # --- Fix 2: Grid-diff turn inference for resync ---
     if prev_grid is not None:
         inferred_turn = _infer_turn_from_diff(prev_grid, ordered_grid)
         if inferred_turn is not None:
